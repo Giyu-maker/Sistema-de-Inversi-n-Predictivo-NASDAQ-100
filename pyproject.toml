@@ -1,0 +1,20 @@
+[project]
+name = "ritech-nasdaq100"
+version = "0.1.0"
+description = "Backend RiTech-NASDAQ100 — Sprint 2 (Walking Skeleton)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "cryptography>=42",
+    "httpx>=0.27",
+    "influxdb-client>=1.40",
+    "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
