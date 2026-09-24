@@ -1,0 +1,13 @@
+# Secretos: .env NUNCA se commitea (lleva credenciales; ver .env.example)
+.env
+.env.local
+
+# Entorno Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Salidas generadas localmente
+graphify-out/
