@@ -1,0 +1,75 @@
+# RiTech-NASDAQ100 — Infraestructura de datos (Sprint 2, Ítem 4)
+# Máquina 2 (Nodo Central): PostgreSQL 16 (relacional/auditoría) + InfluxDB 2.7 (velas 5M).
+# Levanta ambas bases con: docker compose up -d  (requiere Docker en la Máquina 2)
+# Los valores secretos salen de .env (no commiteado; plantilla en .env.example).
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: ritech-postgres16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Falta POSTGRES_DB en .env}
+      POSTGRES_USER: ${POSTGRES_USER:?Falta POSTGRES_USER en .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Falta POSTGRES_PASSWORD en .env}
+    ports:
+      # Solo loopback: la BD no se expone a la red de la oficina (REST-05).
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  influxdb:
+    image: influxdb:2.7
+    container_name: ritech-influxdb27
+    restart: unless-stopped
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUXDB_ADMIN_USER:?Falta INFLUXDB_ADMIN_USER en .env}
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUXDB_ADMIN_PASSWORD:?Falta INFLUXDB_ADMIN_PASSWORD en .env}
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUXDB_ORG:?Falta INFLUXDB_ORG en .env}
+      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUXDB_BUCKET:?Falta INFLUXDB_BUCKET en .env}
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUXDB_ADMIN_TOKEN:?Falta INFLUXDB_ADMIN_TOKEN en .env}
+    ports:
+      # Solo loopback: el bucket no se expone a la red de la oficina (REST-05).
+      - "127.0.0.1:8086:8086"
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+      - influxdb_config:/etc/influxdb2
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8086/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  pgdata:
+    name: ritech-pgdata
+  influxdb_data:
+    name: ritech-influxdb2-data
+  influxdb_config:
+    name: ritech-influxdb2-config
+
+# ============================================================================
+# VERIFICACIÓN EN MÁQUINA 2
+# ----------------------------------------------------------------------------
+# No hay Docker en la máquina de desarrollo: ejecutar estos comandos al
+# desplegar en la Máquina 2 (Nodo Central), desde la raíz del proyecto:
+#
+#   1. Levantar ambas bases:
+#        docker compose up -d
+#   2. Verificar estado (ambos contenedores deben quedar "healthy"):
+#        docker compose ps
+#   3. PostgreSQL responde:
+#        docker compose exec postgres pg_isready -U ritech -d ritech
+#   4. InfluxDB responde:
+#        curl -f http://127.0.0.1:8086/health
+#   5. Detener (los volúmenes persistentes conservan los datos):
+#        docker compose down
+# ============================================================================
