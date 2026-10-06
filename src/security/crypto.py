@@ -1,6 +1,7 @@
 """Cifrado de secretos en reposo con AES-256-GCM (RNF-006).
 
-Las credenciales de Alpha Vantage e Interactive Brokers nunca se guardan en
+Las credenciales de APIs externas (Twelve Data, Alpha Vantage e
+Interactive Brokers) nunca se guardan en
 texto plano: se cifran con `encrypt_secret` y el token resultante es lo único
 que se almacena (p. ej. en `.env`, que no se commitea).
 
