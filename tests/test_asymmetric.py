@@ -51,3 +51,30 @@ class TestIsThresholdBreached:
             AsymmetricCalculator.is_threshold_breached(0.0, 100.0)
         with pytest.raises(ValueError):
             AsymmetricCalculator.is_threshold_breached(-1.0, 100.0)
+
+
+class TestMarketGap:
+    """Detección de gaps e informe de pérdida real (RF-203)."""
+
+    def test_caida_exacta_del_2_por_ciento_es_gap(self) -> None:
+        assert AsymmetricCalculator.is_market_gap(-2.0) is True
+
+    def test_caida_bajo_el_umbral_no_es_gap(self) -> None:
+        assert AsymmetricCalculator.is_market_gap(-1.99) is False
+
+    def test_caida_grave_es_gap(self) -> None:
+        assert AsymmetricCalculator.is_market_gap(-5.0) is True
+
+    def test_variacion_positiva_no_es_gap(self) -> None:
+        assert AsymmetricCalculator.is_market_gap(3.0) is False
+
+    def test_gap_registra_perdida_real_sin_apalancar(self) -> None:
+        # La pérdida real materializada se registra tal cual (passthrough negativo)
+        assert AsymmetricCalculator.calculate_yield(-3.5) == pytest.approx(-3.5)
+
+    def test_aviso_de_gap_informa_diferencia_y_justifica(self) -> None:
+        notice = AsymmetricCalculator.gap_loss_notice(-3.5)
+        assert "-3.50%" in notice  # pérdida real
+        assert "-1.25%" in notice  # límite teórico
+        assert "2.25" in notice  # diferencia en puntos porcentuales
+        assert "Justificación" in notice
