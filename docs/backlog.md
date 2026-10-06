@@ -48,6 +48,9 @@ El desarrollo del sistema para RiTech SAS se distribuye de manera balanceada en 
 *   **Ítem 8: Dashboard de Inversión Web Intranet (Dylan Merchancano)**
     *   *Descripción:* Interfaz web local React con shadcn/ui y gráficos interactivos con Recharts en la Máquina 3, que se comunica con la API de la Máquina 2 para mostrar velas de 5 min, proyecciones e historial.
     *   *Estimación:* 8... | *Valor:* 8/10 | *Requisito:* RF-05.
+*   **Deuda conocida del Sprint 2 — RF-204: Exclusión de Operación en Volatilidad Extrema**
+    *   *Descripción:* Implementar en `AsymmetricCalculator` las ventanas de exclusión (primeros y últimos 15 minutos del horario regular de mercado). Quedó fuera del Ítem 6 del Sprint 2 por prioridad Media en el SRS y por no bloquear el Walking Skeleton; marcado en código como `TODO(RF-204)`. No implementar a medias: requiere decidir el estado de sesión completo.
+    *   *Requisito:* RF-204.
 
 #### SPRINT 4: Seguridad Operativa, Integración con Broker y Cierre
 *   **Objetivo:** Implementar los mecanismos de protección de capital (Kill-Switch), auditoría inmutable, notificaciones locales e integración real en cuenta Sandbox con Interactive Brokers para habilitar el Modo Sombra.
