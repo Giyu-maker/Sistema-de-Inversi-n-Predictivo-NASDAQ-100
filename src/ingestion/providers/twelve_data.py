@@ -33,12 +33,22 @@ class TwelveDataProvider:
         self.symbol = symbol
 
     async def fetch_candles(self) -> dict[str, Any]:
-        """Consulta las velas de 5M (incluidas ventanas extendidas) y las normaliza."""
+        """Consulta las velas de 5M del horario regular y las normaliza.
+
+        Límites verificados empíricamente el 06/10/2026 en el plan gratuito
+        Basic (documentar en la CR de fuente):
+        - `prepost=true` devuelve HTTP 403: las ventanas pre/after-hours están
+          reservadas al plan Pro+ → Basic cubre solo 09:30–16:00 ET (78 velas
+          de las ~192 que pide el escenario de RF-101). Si el sistema exigiera
+          cobertura 4:00–20:00 EST haría falta un plan superior u otra fuente.
+        - Los `datetime` llegan en hora local de Nueva York sin offset (el
+          campo `meta.timezone` viene nulo): `IngestionEngine` los interpreta
+          como America/New_York, consistente con lo observado (09:30–15:55).
+        """
         params: dict[str, str] = {
             "symbol": self.symbol,
             "interval": "5min",
             "outputsize": "50",
-            "prepost": "true",  # cubre pre-market y after-hours (escenario RF-101: 4:00–20:00 EST)
             "apikey": self.api_key,
         }
         async with httpx.AsyncClient(timeout=self._REQUEST_TIMEOUT_S) as client:

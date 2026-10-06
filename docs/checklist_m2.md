@@ -84,7 +84,9 @@ curl --request POST "http://127.0.0.1:8086/api/v2/query?org=ritech" \
 - [ ] **CR pendiente — cambio de fuente:** Alpha Vantage → Twelve Data (verificado
       06/10/2026: intraday/índices premium, cuota 25/día < 192 requeridas). Uso del
       plan gratuito *Basic* es **académico/personal**; producción real exige plan
-      comercial licenciado.
+      comercial licenciado. Límites Basic verificados en vivo: solo horario regular
+      09:30–16:00 ET (78 velas de las ~192 del escenario RF-101; `prepost` exige
+      plan Pro+) y NDX directo exige plan Grow+ (se usa QQQ como proxy).
 - [ ] **CR pendiente — `TODO(SRS-4.2.2)`:** inconsistencia alto/bajo entre SRS y firma
       SDD `write_to_influx`.
 - [ ] **Deuda `TODO(RF-204)`:** ventanas de exclusión (registrada en `docs/backlog.md`).

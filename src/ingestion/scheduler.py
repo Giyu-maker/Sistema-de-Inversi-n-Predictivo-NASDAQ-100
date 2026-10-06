@@ -102,6 +102,9 @@ def main() -> None:
     from src.security.crypto import decrypt_secret
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # Las URLs de httpx incluyen el parámetro apikey: sus logs en INFO
+    # filtrarían la clave en claro a los logs del servicio (RNF-006).
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     api_key = decrypt_secret(os.environ["TWELVE_DATA_API_KEY_ENC"])  # requiere CREDENTIALS_MASTER_KEY
     influx = InfluxDBClient(
         url=os.environ.get("INFLUXDB_URL", "http://127.0.0.1:8086"),

@@ -81,8 +81,10 @@ def parse_raw_candle(timestamp_str: str, raw: dict[str, Any]) -> NasdaqCandle:
 class IngestionEngine:
     """Consulta la fuente de datos y persiste velas de 5M en InfluxDB local."""
 
-    # TODO(RF-102): verificar empíricamente contra la API del proveedor si existe
-    # símbolo de índice directo (NDX); QQQ es el proxy estándar del NASDAQ-100.
+    # RF-102 verificado empíricamente el 06/10/2026 contra la API de Twelve Data:
+    # el índice directo NDX está reservado al plan Grow o superior, así que se
+    # usa QQQ — el ETF proxy estándar del NASDAQ-100, disponible en el plan
+    # gratuito Basic. timestamps de la API verificados como hora de Nueva York.
     SYMBOL = "QQQ"
 
     def __init__(
@@ -107,10 +109,10 @@ class IngestionEngine:
 
         Firma fijada por SDD §5.1.2 — se conserva; la petición concreta la
         ejecuta el `MarketDataProvider` inyectado (en configuración real,
-        `TwelveDataProvider` con `prepost=true` para cubrir pre-market y
-        after-hours según el escenario de RF-101; la marca de sesión por vela
-        no existe en el modelo físico aprobado `NasdaqTick`, solo OHLCV, por
-        lo que el antiguo TODO de `extended_hours` queda cerrado aquí).
+        `TwelveDataProvider`). El antiguo TODO de `extended_hours` queda
+        cerrado: el modelo físico aprobado `NasdaqTick` solo almacena OHLCV
+        (sin marca de sesión) y la cobertura de ventanas extendidas depende
+        del plan contratado — ver límites documentados en el proveedor.
         """
         return await self.provider.fetch_candles()
 
