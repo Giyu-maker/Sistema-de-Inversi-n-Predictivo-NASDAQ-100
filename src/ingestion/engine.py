@@ -1,14 +1,23 @@
 """IngestionEngine — velas de 5M del NASDAQ-100 (Sprint 2, Ítem 5).
 
 Responsabilidades (docs/sdd.md §5.1.1):
-- Interactuar con la API externa de Alpha Vantage de forma robusta (RF-101).
-- Normalizar los datos obtenidos en velas de 5 minutos.
+- Interactuar con la fuente externa de datos de forma robusta (RF-101),
+  delegando la petición HTTP en el `MarketDataProvider` inyectado.
+- Normalizar los datos obtenidos en velas de 5 minutos (formato canónico
+  definido en `src/ingestion/providers/base.py`).
 - Escribir las series temporales en InfluxDB local con índice epoch ms (RF-103).
 
-Tipado (justificación RNF-011): los payloads crudos de Alpha Vantage son JSON
-arbitrario recibido por red y se manejan como `dict[str, Any]`. Ese único `Any`
-se acota de inmediato al validarlo con el modelo estricto Pydantic
-`NasdaqCandle`, que rechaza nulos, negativos y campos extra.
+Cambio de fuente (CR pendiente): la v1.0 del SDD §5.1 fija Alpha Vantage
+dentro de esta clase; la verificación empírica del 06/10/2026 demostró que su
+capa gratuita ya no cubre velas de 5M (intraday e índices son premium, cuota
+25/día < ~192 necesarias por RF-101), así que el HTTP se movió a
+`TwelveDataProvider` tras el acuerdo del equipo de usar el plan gratuito
+*Basic* con fines académicos. Las firmas aprobadas de §5.1.2 no cambian.
+
+Tipado (justificación RNF-011): los payloads crudos son JSON arbitrario
+recibido por red y se manejan como `dict[str, Any]`. Ese único `Any` se acota
+de inmediato al validarlo con el modelo estricto Pydantic `NasdaqCandle`,
+que rechaza nulos, negativos y campos extra.
 """
 
 from __future__ import annotations
@@ -19,21 +28,22 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-import httpx
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
 from pydantic import BaseModel, ConfigDict, Field
 
-_MARKET_TZ = ZoneInfo("America/New_York")  # Alpha Vantage entrega timestamps en hora de Nueva York
+from src.ingestion.providers import MarketDataProvider, TwelveDataProvider
+
+_MARKET_TZ = ZoneInfo("America/New_York")  # los proveedores entregan timestamps en hora de Nueva York
 _CANDLE_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
-# Claves crudas de Alpha Vantage → campos del modelo normalizado.
+# Claves de la vela canónica → campos del modelo normalizado.
 _RAW_CANDLE_FIELDS: dict[str, str] = {
-    "1. open": "price_open",
-    "2. high": "price_high",
-    "3. low": "price_low",
-    "4. close": "price_close",
-    "5. volume": "volume",
+    "open": "price_open",
+    "high": "price_high",
+    "low": "price_low",
+    "close": "price_close",
+    "volume": "volume",
 }
 
 
@@ -55,7 +65,7 @@ class NasdaqCandle(BaseModel):
 
 
 def parse_raw_candle(timestamp_str: str, raw: dict[str, Any]) -> NasdaqCandle:
-    """Convierte una vela cruda de Alpha Vantage en `NasdaqCandle` con timestamp epoch ms.
+    """Convierte una vela cruda canónica en `NasdaqCandle` con timestamp epoch ms.
 
     Lanza `ValueError` si la vela cruda es incompleta o inválida.
     """
@@ -69,49 +79,49 @@ def parse_raw_candle(timestamp_str: str, raw: dict[str, Any]) -> NasdaqCandle:
 
 
 class IngestionEngine:
-    """Consulta Alpha Vantage y persiste velas de 5M en InfluxDB local."""
+    """Consulta la fuente de datos y persiste velas de 5M en InfluxDB local."""
 
-    # TODO(RF-102): confirmar con RiTech SAS el símbolo exacto con el que Alpha Vantage
-    # representa el NASDAQ-100 en su catálogo (QQQ es el proxy estándar del índice).
+    # TODO(RF-102): verificar empíricamente contra la API del proveedor si existe
+    # símbolo de índice directo (NDX); QQQ es el proxy estándar del NASDAQ-100.
     SYMBOL = "QQQ"
-    _REQUEST_TIMEOUT_S = 10.0
 
-    def __init__(self, influx_client: InfluxDBClient, api_key: str) -> None:
+    def __init__(
+        self,
+        influx_client: InfluxDBClient,
+        api_key: str,
+        provider: MarketDataProvider | None = None,
+    ) -> None:
         self.influx_client = influx_client
         self.api_key = api_key
-        self.base_url = "https://www.alphavantage.co/query"
+        # SDD §5.1.2 declara `base_url` como atributo de esta clase; con la
+        # abstracción de proveedor la URL vive en TwelveDataProvider
+        # (desviación a reflejar en la CR de cambio de fuente, ver docstring).
+        self.provider: MarketDataProvider = (
+            provider or TwelveDataProvider(api_key=api_key, symbol=self.SYMBOL)
+        )
         self._bucket = os.environ.get("INFLUXDB_BUCKET", "nasdaq_ticks")
         self._org = os.environ.get("INFLUXDB_ORG", "ritech")
 
     async def fetch_nasdaq_quote(self) -> dict[str, Any]:
-        """Realiza la petición HTTP asíncrona para obtener la última vela de 5M."""
-        params: dict[str, str] = {
-            "function": "TIME_SERIES_INTRADAY",
-            "symbol": self.SYMBOL,
-            "interval": "5min",
-            "outputsize": "compact",
-            "apikey": self.api_key,
-            # TODO(RF-102): decidir `extended_hours` según la ventana horaria
-            # (pre-market / horario regular / after-hours) y almacenar la marca de
-            # sesión con la vela. No se implementa a ciegas: queda pendiente de
-            # confirmar cómo responde la API en cada ventana.
-        }
-        async with httpx.AsyncClient(timeout=self._REQUEST_TIMEOUT_S) as client:
-            response = await client.get(self.base_url, params=params)
-            response.raise_for_status()
-            payload: Any = response.json()
-        if not isinstance(payload, dict):
-            raise ValueError("Respuesta inesperada de Alpha Vantage: se esperaba un objeto JSON.")
-        return payload
+        """Realiza la petición HTTP asíncrona para obtener la última vela de 5M.
+
+        Firma fijada por SDD §5.1.2 — se conserva; la petición concreta la
+        ejecuta el `MarketDataProvider` inyectado (en configuración real,
+        `TwelveDataProvider` con `prepost=true` para cubrir pre-market y
+        after-hours según el escenario de RF-101; la marca de sesión por vela
+        no existe en el modelo físico aprobado `NasdaqTick`, solo OHLCV, por
+        lo que el antiguo TODO de `extended_hours` queda cerrado aquí).
+        """
+        return await self.provider.fetch_candles()
 
     def validate_payload(self, data: dict[str, Any]) -> bool:
         """Verifica que los datos no contengan valores nulos o ilógicos (RF-101)."""
         if not data:
             return False
-        # Los errores de Alpha Vantage (cuota agotada, clave inválida) llegan como claves de error.
-        if "Error Message" in data or "Note" in data or "Information" in data:
+        # Los errores de proveedor (cuota agotada, clave inválida) llegan como clave canónica.
+        if "error" in data:
             return False
-        series = data.get("Time Series (5min)")
+        series = data.get("candles")
         if not isinstance(series, dict) or not series:
             return False
         for timestamp_str, raw in series.items():

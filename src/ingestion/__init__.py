@@ -1,1 +1,1 @@
-"""Ingesta de datos de mercado — Alpha Vantage → InfluxDB (RF-101, RF-102, RF-103)."""
+"""Ingesta de datos de mercado — Twelve Data → InfluxDB (RF-101, RF-102, RF-103)."""

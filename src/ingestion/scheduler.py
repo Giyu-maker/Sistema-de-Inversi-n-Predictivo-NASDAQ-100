@@ -2,7 +2,7 @@
 
 Ciclo de extremo a extremo del Sprint 2:
 
-    Alpha Vantage → fetch → validate → InfluxDB → AsymmetricCalculator
+    Twelve Data → fetch → validate → InfluxDB → AsymmetricCalculator
 
 Decisiones de alcance (trazadas, no olvidos):
 - Cadencia con `while True` + `asyncio.sleep`: APScheduler/Celery son
@@ -29,9 +29,9 @@ DEFAULT_INTERVAL_S = 300.0  # velas de 5 minutos (RF-101)
 
 def _sorted_candles(payload: dict[str, Any]) -> list[NasdaqCandle]:
     """Normaliza y ordena cronológicamente las velas del payload validado."""
-    series = payload.get("Time Series (5min)")
+    series = payload.get("candles")
     if not isinstance(series, dict):
-        raise ValueError("El payload no contiene 'Time Series (5min)'.")
+        raise ValueError("El payload no contiene 'candles' (formato canónico).")
     candles = [parse_raw_candle(ts, raw) for ts, raw in series.items()]
     return sorted(candles, key=lambda c: c.timestamp)
 
@@ -60,7 +60,7 @@ class IngestionScheduler:
         """Un ciclo completo: obtiene la vela, valida, persiste y calcula el rendimiento."""
         payload = await self.engine.fetch_nasdaq_quote()
         if not self.engine.validate_payload(payload):
-            logger.warning("Payload de Alpha Vantage rechazado por validación; no se persiste.")
+            logger.warning("Payload de la fuente de datos rechazado por validación; no se persiste.")
             return
 
         candles = _sorted_candles(payload)
@@ -102,7 +102,7 @@ def main() -> None:
     from src.security.crypto import decrypt_secret
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    api_key = decrypt_secret(os.environ["ALPHAVANTAGE_API_KEY_ENC"])  # requiere CREDENTIALS_MASTER_KEY
+    api_key = decrypt_secret(os.environ["TWELVE_DATA_API_KEY_ENC"])  # requiere CREDENTIALS_MASTER_KEY
     influx = InfluxDBClient(
         url=os.environ.get("INFLUXDB_URL", "http://127.0.0.1:8086"),
         token=os.environ["INFLUXDB_ADMIN_TOKEN"],

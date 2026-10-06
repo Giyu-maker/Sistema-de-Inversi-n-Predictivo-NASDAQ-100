@@ -13,18 +13,18 @@ from src.ingestion.engine import parse_raw_candle
 from src.ingestion.scheduler import IngestionScheduler, _sorted_candles, _variation_pct
 
 _LATEST_RAW = {
-    "1. open": "101.0", "2. high": "102.5", "3. low": "100.5",
-    "4. close": "102.0", "5. volume": "1000",
+    "open": 101.0, "high": 102.5, "low": 100.5,
+    "close": 102.0, "volume": 1000.0,
 }
 _PREVIOUS_RAW = {
-    "1. open": "100.0", "2. high": "101.5", "3. low": "99.5",
-    "4. close": "101.0", "5. volume": "900",
+    "open": 100.0, "high": 101.5, "low": 99.5,
+    "close": 101.0, "volume": 900.0,
 }
 
 
 def _payload() -> dict[str, Any]:
     # Orden de inserción invertido a propósito: 09:35 aparece antes que 09:30
-    return {"Time Series (5min)": {
+    return {"candles": {
         "2026-10-06 09:35:00": _LATEST_RAW,
         "2026-10-06 09:30:00": _PREVIOUS_RAW,
     }}
