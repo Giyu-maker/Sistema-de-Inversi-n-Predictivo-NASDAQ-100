@@ -45,11 +45,40 @@ class TwelveDataProvider:
           campo `meta.timezone` viene nulo): `IngestionEngine` los interpreta
           como America/New_York, consistente con lo observado (09:30–15:55).
         """
+        return await self._time_series(outputsize="50")
+
+    async def fetch_candles_range(
+        self,
+        start_date: str,
+        end_date: str,
+        outputsize: int = 5000,
+    ) -> dict[str, Any]:
+        """Obtiene un tramo de histórico para el backfill (no forma parte de RF-101).
+
+        Límites del plan gratuito Basic verificados en la documentación oficial
+        de Twelve Data:
+        - `outputsize` admite **1–5000** puntos por petición (5000 es el máximo).
+        - Cada `/time_series` cuesta **1 crédito** → 8/min y 800/día.
+        - El intradía está disponible **desde 2022** para acciones/ETF de EE. UU.
+        - `start_date`/`end_date` acotan el rango y `outputsize` determina
+          cuántas filas se devuelven **dentro** de ese rango (las más recientes).
+
+        `start_date` y `end_date` van en formato ``YYYY-MM-DD HH:MM:SS`` en hora
+        local del intercambio (Nueva York), consistente con los `datetime` que
+        devuelve la API. Cada ventana devuelve hasta `outputsize` velas; el
+        paginado hacia atrás lo resuelve `src/ingestion/backfill.py` moviendo el
+        `end_date` a la vela más antigua recibida.
+        """
+        return await self._time_series(
+            outputsize=str(outputsize), start_date=start_date, end_date=end_date
+        )
+
+    async def _time_series(self, **extra_params: str) -> dict[str, Any]:
         params: dict[str, str] = {
             "symbol": self.symbol,
             "interval": "5min",
-            "outputsize": "50",
             "apikey": self.api_key,
+            **extra_params,
         }
         async with httpx.AsyncClient(timeout=self._REQUEST_TIMEOUT_S) as client:
             response = await client.get(self.BASE_URL, params=params)
