@@ -14,12 +14,41 @@ Reglas que garantiza esta capa (RF-301, ajustes del plan Sprint 3)
    el comportamiento intradía, y el modelo aprendería artefactos de horario, no
    mercado. `extract_window()` valida el hueco entre velas consecutivas y
    levanta `ValueError` si alguien intenta pasárselo.
-2. **Todo lo que se calcula usa solo datos hasta la vela `t`.** Los indicadores
-   son causales: no hay media móvil que mire hacia delante dentro de la ventana.
+2. **Nada mira más allá de la ventana.** Ninguna feature usa datos posteriores
+   al cierre de la última vela observada, que es el instante de la predicción.
+   Dentro de la ventana, todos los indicadores son causales fila a fila (solo
+   miran hacia atrás) **salvo `vol_rel`**, que expresa el volumen de cada vela
+   como fracción del medio de las 12 observadas: es relativo a la ventana, no a
+   un desplazamiento temporal. Es una decisión consciente — "volumen alto" no
+   significa nada sin con qué comparar — y no introduce fuga, porque las 12
+   velas están enteramente por delante del instante en que se decide.
 
 Ningún estadístico de normalización vive aquí: la media/desviación se calculan en
 `dataset.py` **solo sobre train** y se guardan en el artefacto, porque si se
 calcularan sobre el dataset completo habría fuga desde test hacia el modelo.
+
+Categoría de cada feature (importa al leer el modelo)
+-----------------------------------------------------
+No todas se comportan igual respecto a la posición que ocupan en la ventana, y
+conviene saberlo antes de interpretar una atribución XAI:
+
+* **De vela a vela** — `log_range`, `close_pos`, `body_pos`, `log_vol`. Dependen
+  solo de la vela. La misma vela da el mismo valor esté donde esté en la
+  ventana.
+* **Con historia hacia atrás** — `range_vol` (media móvil de la amplitud) y
+  `ret_vol` (desviación móvil del retorno). Son causales, pero la fila 0 de
+  `ret_vol` arrastra el valor de la fila 0 de `log_ret`, así que cerca del
+  inicio de la ventana dependen de ella.
+* **Relativas a la ventana** — `vol_rel` (medio de las 12), `from_open`
+  (apertura de la ventana) y `ema_trend` (la cadena EMA se siembra en la
+  primera vela). Cambian si cambia la primera vela.
+* **`log_ret`** es de vela a vela **salvo en la fila 0**, que no tiene vela
+  previa dentro de la ventana y usa su propia apertura como referencia.
+
+La consecuencia es que dos ventanas consecutivas comparten **11 de sus 12
+velas**, pero no 11 de 12 filas de features: la fila de la vela compartida se
+recalcula con otra referencia. De ahí que el plan §4 mida la incertidumbre con
+bootstrap por bloques de sesión y no con intervalos binomiales i.i.d.
 
 Formato de fecha del sistema: DD/MM/YYYY HH:mm:ss (convención 5.6).
 """

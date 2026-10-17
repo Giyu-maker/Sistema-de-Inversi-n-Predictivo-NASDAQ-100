@@ -211,17 +211,26 @@ def build_samples(sessions: list[list[Candle]], config: DatasetConfig) -> tuple[
     El índice de inicio es la posición de la primera vela de la sesión en la
     línea de tiempo concatenada, y es lo que permite aplicar el embargo de
     `EMBARGO` velas sin importar cuántas sesiones haya.
+
+    **Las sesiones que no alcanzan para una muestra no entran en el índice de
+    inicio y se renumeran.** Si contaran, ocuparían un hueco del corte temporal
+    sin aportar ninguna muestra, y con pocas sesiones eso puede dejar `test`
+    vacío — un fallo silencioso que solo se vería en producción.
     """
     muestras: list[Sample] = []
     session_start: list[int] = []
     cortas = 0
     base = 0
+    s_aceptadas = 0
 
-    for s_idx, sesion in enumerate(sessions):
-        session_start.append(base)
+    for sesion in sessions:
         n_utilizables = max_samples_per_session(len(sesion))
         if n_utilizables <= 0:
             cortas += 1
+            base += len(sesion)
+            continue
+
+        session_start.append(base)
         for i in range(n_utilizables):
             ventana = sesion[i: i + WINDOW]
             retorno = forward_return_pct(sesion, i)
@@ -229,7 +238,7 @@ def build_samples(sessions: list[list[Candle]], config: DatasetConfig) -> tuple[
             muestras.append(Sample(
                 x=extract_window(ventana),
                 y=label_for(retorno, config.stable_band_pct),
-                session_idx=s_idx,
+                session_idx=s_aceptadas,
                 window_start_idx=base + i,
                 label_end_idx=base + i + WINDOW - 1 + HORIZON,
                 window_end_ts=ventana[-1].timestamp,
@@ -238,6 +247,7 @@ def build_samples(sessions: list[list[Candle]], config: DatasetConfig) -> tuple[
                 persistence_y=label_for(retorno_previo, config.stable_band_pct),
                 persistence_return_pct=retorno_previo,
             ))
+        s_aceptadas += 1
         base += len(sesion)
 
     return muestras, session_start, cortas
