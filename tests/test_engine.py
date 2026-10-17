@@ -142,3 +142,131 @@ class TestWriteToInflux:
         _, kwargs = influx.write_api.return_value.write.call_args
         assert kwargs["bucket"] == "nasdaq_ticks"
         assert kwargs["org"] == "ritech"
+
+
+def _tabla_con_timestamps(epoch_ms: int) -> list[Any]:
+    """Tabla Flux simulada con un solo registro en el timestamp dado."""
+    registro = MagicMock()
+    registro.get_time.return_value = datetime.fromtimestamp(epoch_ms / 1000, tz=ZoneInfo("UTC"))
+    tabla = MagicMock()
+    tabla.records = [registro]
+    return [tabla]
+
+
+class TestInmutabilidadRF103:
+    """RF-103 / CR-003: InfluxDB sobrescribe en silencio; la guarda es de la app."""
+
+    def test_timestamp_no_existente_se_escribe(self, caplog: pytest.LogCaptureFixture) -> None:
+        influx = MagicMock()
+        influx.query_api.return_value.query.return_value = []
+        engine = IngestionEngine(influx_client=influx, api_key="k",
+                                 provider=SyntheticMarketDataProvider())
+        with caplog.at_level("WARNING"):
+            asyncio.run(engine.write_to_influx(1790170200000, 100.0, 101.0, 900.0))
+        influx.write_api.return_value.write.assert_called_once()
+        assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+    def test_timestamp_existente_no_se_escribe_y_advierte(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        influx = MagicMock()
+        influx.query_api.return_value.query.return_value = _tabla_con_timestamps(1790170200000)
+        engine = IngestionEngine(influx_client=influx, api_key="k",
+                                 provider=SyntheticMarketDataProvider())
+        with caplog.at_level("WARNING"):
+            asyncio.run(engine.write_to_influx(1790170200000, 100.0, 101.0, 900.0))
+        influx.write_api.return_value.write.assert_not_called()
+        assert any("ya existe" in r.getMessage() for r in caplog.records)
+
+    def test_timestamp_distinto_en_el_mismo_dia_si_se_escribe(self) -> None:
+        # Un punto vecino NO debe inhibir la escritura de otro timestamp.
+        influx = MagicMock()
+        influx.query_api.return_value.query.return_value = _tabla_con_timestamps(1790170200000)
+        engine = IngestionEngine(influx_client=influx, api_key="k",
+                                 provider=SyntheticMarketDataProvider())
+        asyncio.run(engine.write_to_influx(1790170500000, 100.0, 101.0, 900.0))
+        influx.write_api.return_value.write.assert_called_once()
+
+    def test_consulta_de_existencia_usa_el_bucket_y_un_rango_exacto(self) -> None:
+        influx = MagicMock()
+        influx.query_api.return_value.query.return_value = []
+        engine = IngestionEngine(influx_client=influx, api_key="k",
+                                 provider=SyntheticMarketDataProvider())
+        asyncio.run(engine.write_to_influx(1790170200000, 100.0, 101.0, 900.0))
+        consulta = influx.query_api.return_value.query.call_args[0][0]
+        assert 'from(bucket: "nasdaq_ticks")' in consulta
+        assert 'r["_measurement"] == "NasdaqTick"' in consulta
+        # 1790170200000 ms = 2026-09-23T13:30:00Z; el rango es [ts-1ms, ts+2ms).
+        assert 'start: time(v: "2026-09-23T13:29:59.999000Z")' in consulta
+        assert 'stop: time(v: "2026-09-23T13:30:00.002000Z")' in consulta
+
+
+class TestEscrituraPorLote:
+    """Backfill: una consulta de rango y una escritura por lote (no por vela)."""
+
+    def _engine(self, influx: MagicMock) -> IngestionEngine:
+        return IngestionEngine(influx_client=influx, api_key="k",
+                               provider=SyntheticMarketDataProvider())
+
+    @staticmethod
+    def _vela(epoch_ms: int, close: float = 101.0) -> NasdaqCandle:
+        return NasdaqCandle(timestamp=epoch_ms, price_open=close - 1.0,
+                            price_high=close + 1.0, price_low=close - 2.0,
+                            price_close=close, volume=900.0)
+
+    def test_lote_completamente_nuevo_escribe_todas_en_una_sola_llamada(self) -> None:
+        influx = MagicMock()
+        influx.query_api.return_value.query.return_value = []
+        engine = self._engine(influx)
+        escritas, omitidas = asyncio.run(
+            engine.write_candles_batch([self._vela(1790170200000), self._vela(1790170500000)])
+        )
+        assert (escritas, omitidas) == (2, 0)
+        influx.write_api.return_value.write.assert_called_once()
+        puntos = influx.write_api.return_value.write.call_args[1]["record"]
+        assert len(puntos) == 2
+
+    def test_lote_parcialmente_existente_escribe_solo_lo_que_falta(self) -> None:
+        influx = MagicMock()
+        influx.query_api.return_value.query.return_value = _tabla_con_timestamps(1790170200000)
+        engine = self._engine(influx)
+        escritas, omitidas = asyncio.run(
+            engine.write_candles_batch([self._vela(1790170200000), self._vela(1790170500000)])
+        )
+        assert (escritas, omitidas) == (1, 1)
+        puntos = influx.write_api.return_value.write.call_args[1]["record"]
+        assert len(puntos) == 1
+        # La única vela escrita es la que faltaba (epoch ms al final del protocolo de línea).
+        assert puntos[0].to_line_protocol().endswith(" 1790170500000")
+
+    def test_lote_totalmente_existente_no_escribe_nada(self) -> None:
+        influx = MagicMock()
+        influx.query_api.return_value.query.return_value = _tabla_con_timestamps(1790170200000)
+        engine = self._engine(influx)
+        escritas, omitidas = asyncio.run(engine.write_candles_batch([self._vela(1790170200000)]))
+        assert (escritas, omitidas) == (0, 1)
+        influx.write_api.return_value.write.assert_not_called()
+
+    def test_lote_vacio_no_consulta_ni_escribe(self) -> None:
+        influx = MagicMock()
+        engine = self._engine(influx)
+        assert asyncio.run(engine.write_candles_batch([])) == (0, 0)
+        influx.query_api.return_value.query.assert_not_called()
+        influx.write_api.return_value.write.assert_not_called()
+
+    def test_solo_hace_una_consulta_para_todo_el_lote(self) -> None:
+        influx = MagicMock()
+        influx.query_api.return_value.query.return_value = []
+        engine = self._engine(influx)
+        asyncio.run(engine.write_candles_batch(
+            [self._vela(1790170200000 + i * 300_000) for i in range(5)]
+        ))
+        assert influx.query_api.return_value.query.call_count == 1
+
+    def test_existe_un_metodo_unico_de_consulta_de_existencia(self) -> None:
+        # La API pública de lote no debe esconder una consulta por vela.
+        influx = MagicMock()
+        influx.query_api.return_value.query.return_value = _tabla_con_timestamps(5)
+        engine = self._engine(influx)
+        assert asyncio.run(engine.existing_timestamps([5, 6])) == {5}
+        assert asyncio.run(engine.existing_timestamps([])) == set()

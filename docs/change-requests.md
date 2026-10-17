@@ -101,3 +101,62 @@ Twelve Data Basic tiene licencia "Individual — personal, internal, non-commerc
 
 ### Decisión requerida
 Aprobación formal de: (1) el cambio de "Alpha Vantage" a "Twelve Data" en los documentos listados arriba, y (2) la aceptación explícita de que RF-102 queda parcialmente cubierto (solo horario regular) bajo el plan gratuito actual, como alcance conocido hasta que se evalúe un upgrade de plan.
+
+---
+
+## CR-003 — Inmutabilidad del histórico en InfluxDB: garantía de aplicación, no del motor
+
+| Campo | Valor |
+|---|---|
+| **Fecha de detección** | Sprint 2 — cierre, verificación empírica de RF-103 |
+| **Solicitante** | Equipo de desarrollo (Naranja's Team) |
+| **Documentos afectados** | SRS v1.0 §4.4 (Integridad de Datos); SDD v1.0 §5.1 (firma de `write_to_influx`) |
+| **Tipo** | Corrección de implementación / clarificación de requisito |
+| **Prioridad** | Alta (RF-103, Prioridad Alta en el SRS) |
+| **Estado** | Implementado y verificado en vivo; pendiente de aprobación formal |
+
+### Hallazgo
+
+SRS §4.4 (Integridad) exige textualmente:
+
+> "InfluxDB almacena datos inmutables donde **no se permiten escrituras destructivas o modificaciones de registros de precios históricos**."
+
+El equipo asumió que InfluxDB garantizaba eso por sí mismo. **No es así.** Verificación empírica del 06/10/2026 sobre InfluxDB 2.7 real (contenedor `ritech-influxdb27`): reescribir un punto con el mismo timestamp pero con un `volume` alterado **no lanzó error, no creó un duplicado y no dejó rastro** — el punto quedó con el valor nuevo (*last write wins*). Es decir, el motor sobrescribe el histórico de forma **silenciosa y destructiva**, que es exactamente lo que el SRS prohíbe.
+
+En el hallazgo original del Sprint 2 (documentado en `docs/checklist_m2.md` §5) la mitigación fue solo conductual: "el orquestador solo escribe la vela vigente". Eso reduce la probabilidad del evento, pero **no satisface el requisito**: cualquier reintento, duplicación de ciclo, reejecución manual o nuevo módulo reescribiría el histórico sin oposición.
+
+### Qué exige el SRS vs. qué hace el motor
+
+| | Contenido |
+|---|---|
+| **SRS §4.4 exige** | Que un registro de precio histórico **no pueda** ser modificado ni destruido, sin importar qué proceso intente escribir. |
+| **InfluxDB 2.7 hace** | Sobrescribe el punto en silencio si coinciden measurement + tags + timestamp. **No existe** modo *insert-if-absent* nativo a nivel de punto. |
+| **Brecha** | El requisito no se puede delegar al motor: debe imponerlo la capa de aplicación. |
+
+### Cómo se resolvió
+
+Guarda *insert-if-absent* en la capa de aplicación (`src/ingestion/engine.py`):
+
+- **`write_to_influx()`** (firma aprobada del SDD §5.1.2, **sin cambios en sus parámetros**): antes de escribir, consulta InfluxDB por el timestamp exacto. Si ya existe → **no escribe** y emite `WARNING` ("Escritura omitida: la vela con timestamp … ya existe en el bucket …"). Si no existe → escribe normalmente.
+- **`existing_timestamps()` + `write_candles_batch()`**: rutas nuevas para el backfill del Sprint 3. Una **única consulta de rango** para toda la secuencia y una **única escritura por lote** con las velas faltantes — no una consulta por vela. Devuelven `(escritas, omitidas)`.
+- La verificación corre dentro del mismo `asyncio.to_thread` de la escritura, de modo que no se abre un hilo adicional por vela.
+
+### Limitación declarada (no oculta)
+
+La guarda es **read-then-write**: existe una ventana teórica de condición de carrera entre la consulta y la escritura. Con el orquestador actual de **un solo escritor** y una vela cada 5 minutos es un riesgo despreciable, pero **no es una garantía transaccional del motor**. Para eliminarla por completo haría falta o bien un almacén con constraint único real (PostgreSQL ya lo es, y `transactions`/`ai_predictions` usan UUID), o bien un mecanismo de bloqueo del bucket. Se deja explícito para que nadie interprete esto como inmutabilidad fuerte de InfluxDB.
+
+### Verificación
+
+| Prueba | Resultado |
+|---|---|
+| Suite unitaria (`tests/test_engine.py`, 10 tests nuevos) | Timestamp nuevo → escribe; timestamp existente → **no escribe + WARNING**; vecino distinto → sí escribe; lote parcial → escribe solo lo faltante; lote 100% existente → cero escrituras; **una sola consulta por lote** |
+| **Contra InfluxDB real (06/10/2026)** | Intento de reescribir la vela real `1791316500000` con `price_open=999, price_close=888, volume=777` → `WARNING Escritura omitida…` y lectura de vuelta: **`price_open=759.51001`, `price_close=759.60999`, `volume=1736118.0`** — valores originales intactos |
+
+### Cambio propuesto
+
+- **SRS §4.4:** dejar constancia de que la inmutabilidad del histórico en InfluxDB es una **propiedad impuesta por la capa de aplicación** (guarda insert-if-absent), no una garantía del motor de series temporales. El requisito en sí no se relaja: se cumple igual.
+- **SDD §5.1:** documentar la guarda en la especificación de `write_to_influx()`. La firma pública **no cambia**; se añaden `existing_timestamps()` y `write_candles_batch()` como operaciones de soporte del backfill.
+
+### Impacto
+
+Bajo. Es una operación de lectura previa adicional en el mismo hilo de escritura (medida: sub-milisegundo sobre InfluxDB local). No rompe ninguna firma aprobada ni modifica datos ya ingeridos. La suite completa pasó de **53 a 63 tests** en verde.

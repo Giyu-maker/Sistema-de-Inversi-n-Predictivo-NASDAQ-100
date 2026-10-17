@@ -72,8 +72,16 @@ set -a; source .env; source .env.local; set +a
 .venv/bin/python -m src.ingestion.scheduler
 ```
 
-- [ ] **Criterio:** log `INFO ... Vela <epoch_ms> persistida · variación ... · rendimiento ...`
+- [x] **Criterio:** log `INFO ... Vela <epoch_ms> persistida · variación ... · rendimiento ...`
       cada ~300 s, al menos 3 ciclos consecutivos (RF-101).
+      *(verificado 17/10/2026 — 3 ciclos reales contra Twelve Data + InfluxDB
+      con la guarda de CR-003 activa: ciclo 1→2 en **300.6 s**, ciclo 2→3 en
+      **300.6 s** — desviación **+0.6 s** sobre el objetivo de 300 s en ambos.
+      Cronómetro completo en `/tmp/opencode/scheduler_cadence.log`.
+      Ejecutado un sábado: los tres ciclos devolvieron la misma vela, por lo que
+      la guarda de inmutabilidad omitió la escritura en los ciclos 2 y 3 con
+      `WARNING Escritura omitida: la vela con timestamp ... ya existe`, lo que
+      además re-valida CR-003 en condiciones reales.)*
 - [ ] **Criterio:** una falla de red o de validación produce `WARNING`/`ERROR`,
       **no** termina el proceso; el siguiente ciclo se ejecuta igual.
       *(camino de error cubierto por la suite en `tests/test_scheduler.py`;
@@ -105,10 +113,15 @@ curl --request POST "http://127.0.0.1:8086/api/v2/query?org=ritech" \
   `volume` alterado NO lanzó error ni creó un duplicado: quedó **1 punto** con
   el valor nuevo (*last write wins* / overwrite silencioso); se restauró el
   valor original por la misma vía y se verificó la vuelta a `1736118.0`.
-  → La inmutabilidad del histórico (RF-103) queda garantizada **por la capa de
-  aplicación**: el orquestador solo escribe la vela vigente y no reescribe
-  históricos con valores distintos. Este es el comportamiento real sobre el
-  que deben apoyarse los criterios de "sin escrituras destructivas".
+  → **Cerrado con CR-003 (cierre del Sprint 2):** la inmutabilidad del histórico
+  (RF-103) ahora la garantiza la capa de aplicación mediante una guarda
+  *insert-if-absent* en `write_to_influx()` — si el timestamp ya existe, **no
+  escribe** y emite `WARNING`. Verificado de nuevo contra InfluxDB real: la
+  vela `1791316500000` se intentó reescribir con `price_open=999,
+  price_close=888, volume=777` → `WARNING Escritura omitida…` y lectura de
+  vuelta con los valores originales intactos
+  (`759.51001 / 759.60999 / 1736118.0`). Detalle y limitación declarada
+  (read-then-write) en `docs/change-requests.md` CR-003.
 
 ## 6. Pendientes conocidos al cerrar Sprint 2 (no son fallas de M2)
 
@@ -122,15 +135,34 @@ curl --request POST "http://127.0.0.1:8086/api/v2/query?org=ritech" \
 - [ ] **CR-001 — `price_high`/`price_low` (registrada en `docs/change-requests.md`,
       pendiente de aprobación formal):** inconsistencia alto/bajo entre SRS y firma
       SDD `write_to_influx` (marcado `TODO(SRS-4.2.2)` en el código).
+      *Impacto Sprint 3:* bloquea el uso de `price_high`/`price_low` como features
+      del modelo predictivo (RF-301); la primera versión del modelo trabaja con
+      apertura, cierre y volumen, que son los tres campos que la firma aprobada
+      sí persiste.
+- [ ] **CR-003 — inmutabilidad del histórico (implementada y verificada, pendiente
+      de aprobación formal):** ver §5 de este checklist y `docs/change-requests.md`.
 - [ ] **Deuda `TODO(RF-204)`:** ventanas de exclusión (registrada en `docs/backlog.md`).
-- [ ] **Hallazgo RNF-003** (medido 06/10/2026, ver §7): ciclo real > 500 ms —
-      registrado en `docs/backlog.md` para decisión del equipo.
+- [ ] **RNF-003 — RECLASIFICADO a "no verificable aún"** (ver §7): la medición del
+      Sprint 2 no cubre el alcance del requisito (faltan IA y UI, e incluye el
+      fetch externo). Se re-mide al cierre de Sprint 3.
 - [ ] FastAPI y Dashboard entran en Sprint 3 (decisión registrada en
       `src/calculator/asymmetric.py`).
 
 ## 7. Hallazgos de la verificación en vivo (06/10/2026)
 
-### RNF-003 — ciclo real fetch→validate→write→calculate (NO CUMPLE aún)
+### RNF-003 — ciclo real fetch→validate→write→calculate (RECLASIFICADO: no verificable aún)
+
+> **Reclasificación al cierre del Sprint 2.** Lo que sigue es la medición
+> original del 06/10/2026. Se mantiene íntegra como evidencia, pero **ya no
+> se interpreta como incumplimiento**: RNF-003 (SRS §6.2) mide *"procesar una
+> nueva vela de 5 minutos, consultar InfluxDB, ejecutar el modelo de IA local,
+> calcular la asimetría y actualizar la interfaz gráfica" **"en el servidor
+> local"***. El ciclo medido **incluye el fetch externo** (fuera del alcance
+> del requisito) y **carece de dos de sus cinco componentes** — la inferencia
+> de IA y la actualización de UI, ambos en Sprint 3. El estado correcto es
+> **no verificable aún**; se re-mide al cierre de Sprint 3 excluyendo el fetch
+> del cronómetro y reportando por separado la porción local. Ver
+> `docs/backlog.md`.
 
 Medido con `perf_counter` sobre `run_once()` real (Twelve Data + InfluxDB local,
 3 iteraciones consecutivas):
@@ -153,6 +185,9 @@ Medido con `perf_counter` sobre `run_once()` real (Twelve Data + InfluxDB local,
 - **Estado:** hallazgo registrado, **sin optimizar** (decisión del equipo:
   estrategias posibles — caché del último candle, tolerar el fetch externo como
   parte de RF-101 y no de RNF-003, o exigir RTT al proveedor).
+- **Estado tras el cierre del Sprint 2:** reclasificado a **"no verificable
+  aún"** (ver recuadro al inicio de §7). No se optimizó nada: se espera a tener
+  los dos componentes faltantes para medir el alcance real del requisito.
 
 ### Otros hallazgos
 
@@ -162,4 +197,5 @@ Medido con `perf_counter` sobre `run_once()` real (Twelve Data + InfluxDB local,
   Falta CREDENTIALS_MASTER_KEY`); corregido en todos los comandos de este
   checklist a `source .env; source .env.local`.
 - **Inmutabilidad de InfluxDB:** ver hallazgo empírico en §5 (overwrite
-  silencioso; la garantía es de la aplicación, no del motor).
+  silencioso). **Cerrado con CR-003** mediante guarda *insert-if-absent* en la
+  capa de aplicación, verificado contra InfluxDB real.

@@ -6,7 +6,7 @@ Contexto persistente para cualquier agente de codificación (OpenCode, Claude Co
 - `docs/srs.md` — Software Requirements Specification completo (todos los RF-XXX, RNF-XXX, REST-XXX con su texto exacto)
 - `docs/sdd.md` — Software Design Description completo (esquema físico de BD, UML, clases detalladas)
 - `docs/backlog.md` — Product Backlog y planificación de sprints
-- `docs/change-requests.md` — Registro de cambios formales a SRS/SDD (CR-001: campos `price_high`/`price_low`; CR-002: proveedor de datos Alpha Vantage → Twelve Data, RF-102 parcialmente cubierto)
+- `docs/change-requests.md` — Registro de cambios formales a SRS/SDD (CR-001: campos `price_high`/`price_low`; CR-002: proveedor de datos Alpha Vantage → Twelve Data, RF-102 parcialmente cubierto; **CR-003: inmutabilidad del histórico en InfluxDB, resuelta con guarda insert-if-absent en la capa de aplicación**)
 
 Cuando una tarea requiera el texto exacto de un requisito, una firma de clase completa, o cualquier detalle no cubierto abajo, **lee el archivo fuente correspondiente en `docs/` antes de asumir nada.** Este resumen puede quedar desactualizado si el SRS/SDD se revisan; los archivos en `docs/` son la fuente de verdad.
 
@@ -41,7 +41,7 @@ Cuando una tarea requiera el texto exacto de un requisito, una firma de clase co
 | SO | CachyOS x86_64 (kernel 7.1.2-3-cachyos) | CachyOS x86_64 (kernel 7.2.0-1-cachyos) | Windows 11 Pro 64-bit (Build 26200) |
 | Rol | Servidor de inferencia: PyTorch CUDA, entrenamiento diario asíncrono del modelo predictivo ligero | Nodo maestro backend + BD: Docker con PostgreSQL v16, InfluxDB v2.7, FastAPI (Python 3.12), IB Gateway | Terminal del operador/gerente y servidor frontend: Dashboard React+Vite (o servido vía Nginx desde Máquina 2) |
 
-Flujo: `Alpha Vantage API → IngestionEngine (M2) → InfluxDB (M2) → LocalPredictiveModel (M1, CUDA) → RiskManager/AsymmetricCalculator (M2) → Interactive Brokers Gateway (M2, TCP local)`.
+Flujo: `Twelve Data API (QQQ) → IngestionEngine (M2) → InfluxDB (M2) → LocalPredictiveModel (M1, CUDA) → RiskManager/AsymmetricCalculator (M2) → Interactive Brokers Gateway (M2, TCP local)`.
 
 ## 4. Stack tecnológico
 
@@ -50,7 +50,7 @@ Flujo: `Alpha Vantage API → IngestionEngine (M2) → InfluxDB (M2) → LocalPr
 - **IA:** PyTorch con NVIDIA CUDA v12+.
 - **Bases de datos:** PostgreSQL 16 (relacional/auditoría), InfluxDB 2.7 (series temporales, lenguaje Flux).
 - **Broker:** Interactive Brokers Gateway (TWS API) vía TCP local, cuenta Sandbox en desarrollo/Sprint 4.
-- **Datos de mercado:** Alpha Vantage API (HTTP asíncrono).
+- **Datos de mercado:** Twelve Data API (HTTP asíncrono), símbolo `QQQ` como proxy del NASDAQ-100, tras CR-002. Interfaz `MarketDataProvider` intercambiable. *(El SRS y el SDD v1.0 aún nombran Alpha Vantage: cambio pendiente de aprobación formal — ver CR-002.)*
 - **Notificaciones:** módem GSM por USB serie o SMTP/SMS local; correo vía SMTP local.
 
 ## 5. Convenciones de código obligatorias
@@ -126,7 +126,7 @@ Flujo: `Alpha Vantage API → IngestionEngine (M2) → InfluxDB (M2) → LocalPr
 
 | Módulo | Archivo | Responsabilidad | Requisitos |
 |---|---|---|---|
-| `IngestionEngine` | `src/ingestion/engine.py` | Consume Alpha Vantage cada 5 min, valida payload, escribe en InfluxDB | RF-101, RF-102, RF-103 |
+| `IngestionEngine` | `src/ingestion/engine.py` | Consume Twelve Data vía `MarketDataProvider` cada 5 min, valida payload, escribe en InfluxDB con guarda de inmutabilidad (CR-003) | RF-101, RF-102, RF-103 |
 | `AsymmetricCalculator` | `src/calculator/asymmetric.py` | Cálculo de rendimiento 2x / pérdida 1.25% / gaps | RF-201, RF-202, RF-203 |
 | `LocalPredictiveModel` | `src/ai/model.py` | Carga y corre el modelo PyTorch en GPU local, genera predicción + XAI + confianza | RF-301, RF-302, RF-303 |
 | `RiskManager` | `src/security/risk_manager.py` | Valida umbrales por perfil de riesgo, dispara el Kill-switch | RF-402, RF-403, RNF-010 |
@@ -139,21 +139,44 @@ Flujo: `Alpha Vantage API → IngestionEngine (M2) → InfluxDB (M2) → LocalPr
 
 - **Rendimiento:** procesar una vela nueva + IA + cálculo asimétrico + actualizar UI en **< 500 ms**. Carga inicial del frontend **< 1.5 s**.
 - **Disponibilidad:** **99.9%** durante horario extendido (4:00 AM–8:00 PM EST, L–V). Mantenimientos solo después de las 6:00 PM hora Colombia.
-- **Seguridad:** ningún dato sale del hardware local; credenciales de APIs (IB, Alpha Vantage) encriptadas en reposo con **AES-256**.
+- **Seguridad:** ningún dato sale del hardware local; credenciales de APIs (IB, Twelve Data) encriptadas en reposo con **AES-256**.
 - **Fiabilidad:** ante caída de red, suspende nuevas órdenes, alerta al operador, y al reconectar evita duplicar transacciones.
 - **Usabilidad:** acciones críticas (login, activar Modo Autónomo, Kill-switch) a máximo 2 toques. Estados visuales: verde (normal), amarillo (inestable), rojo parpadeante (Kill-switch activo).
 
 ## 14. Estado actual del proyecto
 
 - **Sprint 1 (Planeación) — COMPLETADO.** SRS v1.0 y SDD v1.0 aprobados (este archivo se basa en ellos).
-- **Sprint 2 (Walking Skeleton) — siguiente foco de desarrollo:**
-  - Ítem 4: Config. de red local + Docker Compose (PostgreSQL 16, InfluxDB 2.7) + encriptación AES-256 de credenciales.
-  - Ítem 5: `IngestionEngine` para velas de 5M contra Alpha Vantage.
-  - Ítem 6: `AsymmetricCalculator` (versión virtual/simulada).
-- **Sprint 3:** modelo predictivo CUDA local + Dashboard React.
+- **Sprint 2 (Walking Skeleton) — COMPLETADO (cierre 17/10/2026, tag `sprint-2-cierre`).**
+  - Ítem 4: Docker Compose con PostgreSQL 16 e InfluxDB 2.7 en M2, ambos `healthy` y expuestos **solo en loopback** (`127.0.0.1`), más encriptación AES-256-GCM de credenciales en reposo (`src/security/crypto.py`).
+  - Ítem 5: `IngestionEngine` con cadencia de 5 min, validación estricta Pydantic y escritura en InfluxDB.
+  - Ítem 6: `AsymmetricCalculator` (2x en ganancias, 1.25% en pérdidas, detección de gaps).
+  - **Proveedor de datos: Twelve Data (plan gratuito *Basic*) con el símbolo `QQQ`** como proxy del NASDAQ-100, tras el cambio registrado en CR-002. **Limitación de alcance aceptada y documentada:** Basic solo cubre horario regular (09:30–16:00 ET, 78 velas de las ~192 del escenario RF-101); RF-102 queda **parcialmente cubierto**. El HTTP pasa por la interfaz **`MarketDataProvider`** (`src/ingestion/providers/base.py`), por lo que cambiar de fuente solo toca un adaptador.
+  - **Hallazgos de cierre, registrados en `docs/change-requests.md`:** CR-001 (`price_high`/`price_low` en la firma SDD), CR-002 (cambio de proveedor) y **CR-003 — inmutabilidad del histórico**: InfluxDB 2.7 **sobrescribe en silencio** un punto con el mismo timestamp, así que RF-103/SRS §4.4 no lo garantiza el motor. Se resolvió en la capa de aplicación con una guarda **insert-if-absent** en `write_to_influx()` (no escribe + `WARNING` si el timestamp existe) y con `existing_timestamps()`/`write_candles_batch()` para el backfill (una consulta de rango y una escritura por lote). Verificado contra InfluxDB real.
+  - **RNF-003 reclasificado a "no verificable aún"**: la medición del Sprint 2 (540–1116 ms con fetch externo; 6–59 ms de proceso local) no cubre el alcance del SRS §6.2, que además requiere inferencia de IA y UI. Se re-mide al cierre de Sprint 3.
+- **Sprint 3 — EN CURSO (Fase A: Ítem 7, red neuronal predictiva local).**
+  - Desarrollo y pruebas ocurren en **M2**; el código que correrá en M1 (IA, CUDA) y M3 (operador) se construye aquí y se despliega después. Ver sección 15.
+  - Fase A: features/dataset sin fuga de datos, `LocalPredictiveModel` (MLP pequeño), XAI por gradiente×entrada, ratio de confianza, reentrenamiento diario por CLI, tabla `ai_predictions`, y el límite M2→M1 (`train` + `serve` en FastAPI).
+  - Fase B (después): API de M2 para el dashboard, dashboard React, Kill-switch, IB.
 - **Sprint 4:** Kill-switch, auditoría 5 años, notificaciones SMS/SMTP, integración TCP con IB, reportes.
 
-## 15. Glosario
+## 15. Modelo de desarrollo y despliegue
+
+Aplica a Sprint 3 y posteriores. Objetivo: **en la otra máquina solo haya que instalar dependencias y arrancar.**
+
+1. **Configuración 100% por variables de entorno**, con un `.env.<rol>.example` por máquina (`.env.m1.example`, `.env.m2.example`, `.env.m3.example`). Nada de `localhost` ni IPs escritas en el código: las URLs de servicios (`INFERENCE_URL`, `INFLUX_URL`, `INFLUXDB_URL`, …) se leen del entorno.
+2. **Mínimo privilegio:** cada máquina recibe solo los secretos que necesita. **M1 no recibe la API key de Twelve Data ni credenciales de PostgreSQL** — solo el token de lectura de InfluxDB y el artefacto del modelo.
+3. **Dependencias por rol** en `pyproject.toml` mediante grupos (`base`, `ai`, `dev`) con lockfile versionado. `torch` vive **solo** en el grupo `ai`: M1 (CUDA) y M2 (CPU) instalan el índice de PyTorch que corresponde a su hardware. Instrucciones exactas en `docs/despliegue.md`.
+4. **Artefactos portables:** se guarda el `state_dict` y se carga con `map_location`, de modo que un modelo entrenado en CPU (M2) carga en CUDA (M1) y a la inversa.
+5. **Sin comandos ni rutas específicas de SO en el código** — se usa `pathlib`. Las unidades systemd y los scripts de shell viven en `deploy/`, no se mezclan con la lógica.
+
+### Límite de despliegue M2 → M1
+
+- **M1 ejecuta dos entrypoints de `src/ai`:** `train` (CLI de reentrenamiento, RF-302) y `serve` (servicio FastAPI mínimo con `/health` y `/predict`, que recibe el tensor de features y devuelve `(trend, confidence, rationale)`).
+- **M1 NO escribe en PostgreSQL.** Las predicciones las persiste M2 en `ai_predictions`.
+- **El cliente de inferencia vive en M2** y apunta a `INFERENCE_URL`. En desarrollo apunta a localhost; mismo código en despliegue, solo cambia la configuración.
+- **FastAPI se permite únicamente** para este servicio de inferencia en esta fase. La API de M2 para el dashboard es Fase B.
+
+## 16. Glosario
 
 - **TWS API:** interfaz local de Interactive Brokers para enviar/recibir órdenes vía TCP.
 - **Modo Sombra:** simulación con datos reales sin comprometer capital real.

@@ -23,8 +23,10 @@ que rechaza nulos, negativos y campos extra.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
-from datetime import datetime
+from collections.abc import Sequence
+from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -34,8 +36,32 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.ingestion.providers import MarketDataProvider, TwelveDataProvider
 
+logger = logging.getLogger(__name__)
+
 _MARKET_TZ = ZoneInfo("America/New_York")  # los proveedores entregan timestamps en hora de Nueva York
 _CANDLE_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+# SRS §4.4 / RF-103: "no se permiten escrituras destructivas o modificaciones de
+# registros de precios históricos". Verificación empírica del 06/10/2026 (CR-003):
+# InfluxDB NO lo garantiza por sí mismo — reescribir un timestamp ya persistido
+# sobrescribe el punto en silencio (last write wins). La garantía, por tanto, la
+# pone la capa de aplicación: antes de escribir se consulta si el timestamp ya
+# existe y, en tal caso, se omite la escritura y se avisa con WARNING.
+_EXISTENCE_QUERY_TEMPLATE = """from(bucket: "{bucket}")
+  |> range(start: time(v: "{start}"), stop: time(v: "{stop}"))
+  |> filter(fn: (r) => r["_measurement"] == "NasdaqTick")
+  |> filter(fn: (r) => r["_field"] == "price_close")
+"""
+
+
+def _epoch_ms_to_rfc3339(epoch_ms: int) -> str:
+    """Convierte epoch ms a RFC3339 con precisión de milisegundos (UTC).
+
+    Se descompone en segundos + microssegundos para no pasar por float y perder
+    precisión con magnitudes epoch grandes.
+    """
+    instant = datetime.fromtimestamp(epoch_ms // 1000, tz=timezone.utc)
+    return instant.strftime("%Y-%m-%dT%H:%M:%S") + f".{(epoch_ms % 1000) * 1000:06d}Z"
 
 # Claves de la vela canónica → campos del modelo normalizado.
 _RAW_CANDLE_FIELDS: dict[str, str] = {
@@ -142,20 +168,97 @@ class IngestionEngine:
         `asyncio.to_thread` para no bloquear el event loop (una vela cada 5 min:
         no hay presión de concurrencia que justifique más).
 
+        RF-103 / CR-003 — guarda de inmutabilidad: si el timestamp ya existe en
+        el bucket **no se escribe** y se emite un WARNING. InfluxDB sobrescribe
+        el punto en silencio (verificado 06/10/2026), así que la no-modificación
+        del histórico la garantiza esta capa, no el motor.
+
         TODO(SRS-4.2.2): inconsistencia documental pendiente de change request
         formal. El SRS 4.2.2 menciona el máximo y mínimo de la vela, y
         `NasdaqCandle` sí valida `price_high`/`price_low`, pero esta firma
         aprobada del SDD §5.1.2 no los captura. No se resuelve aquí por cuenta
         propia: elevar el cambio sobre SRS/SDD v1.0.
         """
-        point = (
+        point = self._point(timestamp, open_p, close_p, vol)
+        await asyncio.to_thread(self._check_and_write_point, timestamp, point)
+
+    def _point(self, timestamp: int, open_p: float, close_p: float, vol: float) -> Point:
+        """Construye el punto `NasdaqTick` con los tres campos del SDD §5.1.2."""
+        return (
             Point("NasdaqTick")
             .time(timestamp, WritePrecision.MS)
             .field("price_open", float(open_p))
             .field("price_close", float(close_p))
             .field("volume", float(vol))
         )
-        await asyncio.to_thread(self._write_point, point)
+
+    def _check_and_write_point(self, timestamp: int, point: Point) -> None:
+        """Escritura unitaria con guarda insert-if-absent (una consulta por vela)."""
+        if self._existing_timestamps({timestamp}):
+            logger.warning(
+                "Escritura omitida: la vela con timestamp %s ya existe en el bucket "
+                "'%s' (RF-103/CR-003, inmutabilidad del histórico).",
+                timestamp, self._bucket,
+            )
+            return
+        self._write_point(point)
+
+    async def existing_timestamps(self, timestamps: Sequence[int]) -> set[int]:
+        """Devuelve el subconjunto de timestamps ya presentes en el bucket.
+
+        Una única consulta de rango para toda la secuencia (no una por vela),
+        para que el backfill no multiplique peticiones contra InfluxDB.
+        """
+        return await asyncio.to_thread(self._existing_timestamps, set(timestamps))
+
+    def _existing_timestamps(self, timestamps: set[int]) -> set[int]:
+        if not timestamps:
+            return set()
+        # Una ventana de rango con holgura de ±1 ms absorbe cualquier diferencia
+        # de redondeo; la intersección final devuelve solo lo pedido.
+        query = _EXISTENCE_QUERY_TEMPLATE.format(
+            bucket=self._bucket,
+            start=_epoch_ms_to_rfc3339(min(timestamps) - 1),
+            stop=_epoch_ms_to_rfc3339(max(timestamps) + 2),
+        )
+        tables = self.influx_client.query_api().query(query, org=self._org)
+        found: set[int] = set()
+        for table in tables:
+            for record in table.records:
+                found.add(int(round(record.get_time().timestamp() * 1000)))
+        return found & timestamps
+
+    async def write_candles_batch(self, candles: Sequence[NasdaqCandle]) -> tuple[int, int]:
+        """Escribe un lote de velas omitiendo las que ya existen (backfill).
+
+        Devuelve `(escritas, omitidas)`. Una sola consulta de rango previa y una
+        sola escritura por lote, en lugar de una operación por vela.
+        """
+        return await asyncio.to_thread(self._write_candles_batch, candles)
+
+    def _write_candles_batch(self, candles: Sequence[NasdaqCandle]) -> tuple[int, int]:
+        ordered = sorted(candles, key=lambda c: c.timestamp)
+        if not ordered:
+            return 0, 0
+        existing = self._existing_timestamps({c.timestamp for c in ordered})
+        missing = [c for c in ordered if c.timestamp not in existing]
+        if missing:
+            points = [
+                self._point(c.timestamp, c.price_open, c.price_close, c.volume)
+                for c in missing
+            ]
+            write_api = self.influx_client.write_api(write_options=SYNCHRONOUS)
+            try:
+                write_api.write(bucket=self._bucket, org=self._org, record=points)
+            finally:
+                write_api.close()
+        skipped = len(ordered) - len(missing)
+        if skipped:
+            logger.warning(
+                "Lote: %d de %d velas ya existentes, escritura omitida (RF-103/CR-003).",
+                skipped, len(ordered),
+            )
+        return len(missing), skipped
 
     def _write_point(self, point: Point) -> None:
         """Escritura síncrona de un punto (solo inserción, sin destructuras sobre el histórico)."""
