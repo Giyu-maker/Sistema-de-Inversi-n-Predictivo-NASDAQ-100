@@ -137,7 +137,7 @@ class TestWriteToInflux:
         influx = MagicMock()
         engine = IngestionEngine(influx_client=influx, api_key="k",
                                  provider=SyntheticMarketDataProvider())
-        asyncio.run(engine.write_to_influx(1790170200000, 100.0, 101.0, 900.0))
+        asyncio.run(engine.write_to_influx(1790170200000, 100.0, 102.0, 99.0, 101.0, 900.0))
         influx.write_api.return_value.write.assert_called_once()
         _, kwargs = influx.write_api.return_value.write.call_args
         assert kwargs["bucket"] == "nasdaq_ticks"
@@ -162,7 +162,7 @@ class TestInmutabilidadRF103:
         engine = IngestionEngine(influx_client=influx, api_key="k",
                                  provider=SyntheticMarketDataProvider())
         with caplog.at_level("WARNING"):
-            asyncio.run(engine.write_to_influx(1790170200000, 100.0, 101.0, 900.0))
+            asyncio.run(engine.write_to_influx(1790170200000, 100.0, 102.0, 99.0, 101.0, 900.0))
         influx.write_api.return_value.write.assert_called_once()
         assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
@@ -174,7 +174,7 @@ class TestInmutabilidadRF103:
         engine = IngestionEngine(influx_client=influx, api_key="k",
                                  provider=SyntheticMarketDataProvider())
         with caplog.at_level("WARNING"):
-            asyncio.run(engine.write_to_influx(1790170200000, 100.0, 101.0, 900.0))
+            asyncio.run(engine.write_to_influx(1790170200000, 100.0, 102.0, 99.0, 101.0, 900.0))
         influx.write_api.return_value.write.assert_not_called()
         assert any("ya existe" in r.getMessage() for r in caplog.records)
 
@@ -184,7 +184,7 @@ class TestInmutabilidadRF103:
         influx.query_api.return_value.query.return_value = _tabla_con_timestamps(1790170200000)
         engine = IngestionEngine(influx_client=influx, api_key="k",
                                  provider=SyntheticMarketDataProvider())
-        asyncio.run(engine.write_to_influx(1790170500000, 100.0, 101.0, 900.0))
+        asyncio.run(engine.write_to_influx(1790170500000, 100.0, 102.0, 99.0, 101.0, 900.0))
         influx.write_api.return_value.write.assert_called_once()
 
     def test_consulta_de_existencia_usa_el_bucket_y_un_rango_exacto(self) -> None:
@@ -192,13 +192,61 @@ class TestInmutabilidadRF103:
         influx.query_api.return_value.query.return_value = []
         engine = IngestionEngine(influx_client=influx, api_key="k",
                                  provider=SyntheticMarketDataProvider())
-        asyncio.run(engine.write_to_influx(1790170200000, 100.0, 101.0, 900.0))
+        asyncio.run(engine.write_to_influx(1790170200000, 100.0, 102.0, 99.0, 101.0, 900.0))
         consulta = influx.query_api.return_value.query.call_args[0][0]
         assert 'from(bucket: "nasdaq_ticks")' in consulta
         assert 'r["_measurement"] == "NasdaqTick"' in consulta
         # 1790170200000 ms = 2026-09-23T13:30:00Z; el rango es [ts-1ms, ts+2ms).
         assert 'start: time(v: "2026-09-23T13:29:59.999000Z")' in consulta
         assert 'stop: time(v: "2026-09-23T13:30:00.002000Z")' in consulta
+
+
+class TestPersistenciaDeRangoCR001:
+    """CR-001 (aprobada 17/10/2026): price_high/price_low se persisten — SDD v1.1."""
+
+    @staticmethod
+    def _engine(influx: MagicMock) -> IngestionEngine:
+        influx.query_api.return_value.query.return_value = []
+        return IngestionEngine(influx_client=influx, api_key="k",
+                               provider=SyntheticMarketDataProvider())
+
+    def test_write_to_influx_persista_open_high_low_close_volume(self) -> None:
+        influx = MagicMock()
+        engine = self._engine(influx)
+        asyncio.run(engine.write_to_influx(1790170200000, 100.0, 105.0, 98.0, 103.0, 750.0))
+        registro = influx.write_api.return_value.write.call_args[1]["record"].to_line_protocol()
+        assert "price_open=100" in registro
+        assert "price_high=105" in registro
+        assert "price_low=98" in registro
+        assert "price_close=103" in registro
+        assert "volume=750" in registro
+
+    def test_orden_ohlc_de_los_parametros_posicionales(self) -> None:
+        # Alto y bajo NO deben intercambiarse con apertura/cierre.
+        influx = MagicMock()
+        engine = self._engine(influx)
+        asyncio.run(engine.write_to_influx(1790170200000, 10.0, 99.0, 1.0, 50.0, 1.0))
+        registro = influx.write_api.return_value.write.call_args[1]["record"].to_line_protocol()
+        assert "price_open=10" in registro
+        assert "price_high=99" in registro
+        assert "price_low=1" in registro
+        assert "price_close=50" in registro
+
+    def test_lote_tambien_persiste_el_rango(self) -> None:
+        influx = MagicMock()
+        engine = self._engine(influx)
+        vela = NasdaqCandle(timestamp=1790170200000, price_open=100.0, price_high=105.0,
+                            price_low=98.0, price_close=103.0, volume=750.0)
+        asyncio.run(engine.write_candles_batch([vela]))
+        registro = influx.write_api.return_value.write.call_args[1]["record"][0].to_line_protocol()
+        assert "price_high=105" in registro
+        assert "price_low=98" in registro
+
+    def test_sin_todo_el_ohlc_no_compila_la_firma(self) -> None:
+        # La firma exige los seis argumentos: no se puede invocar a la antigua.
+        engine = self._engine(MagicMock())
+        with pytest.raises(TypeError):
+            asyncio.run(engine.write_to_influx(1790170200000, 100.0, 101.0, 900.0))  # type: ignore[call-arg]
 
 
 class TestEscrituraPorLote:

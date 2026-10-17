@@ -66,7 +66,8 @@ class IngestionScheduler:
         candles = _sorted_candles(payload)
         latest = candles[-1]
         await self.engine.write_to_influx(
-            latest.timestamp, latest.price_open, latest.price_close, latest.volume
+            latest.timestamp, latest.price_open, latest.price_high,
+            latest.price_low, latest.price_close, latest.volume,
         )
         if len(candles) < 2:
             logger.warning("Menos de dos velas en el payload: se persiste la última sin calcular variación.")

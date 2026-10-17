@@ -14,8 +14,12 @@ Límites del plan gratuito Basic de Twelve Data (documentación oficial):
 
 Uso::
 
+    .venv/bin/python -m src.ingestion.backfill                  # BACKFILL_DAYS (500 por defecto)
     .venv/bin/python -m src.ingestion.backfill --trading-days 120
     .venv/bin/python -m src.ingestion.backfill --trading-days 120 --dry-run
+
+`BACKFILL_DAYS` cuenta **sesiones bursátiles**, no días de calendario:
+500 sesiones ≈ 2 años ≈ 39.000 velas ≈ 8 peticiones de 5000.
 """
 
 from __future__ import annotations
@@ -186,8 +190,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Backfill de velas de 5M desde Twelve Data a InfluxDB (RF-301).",
     )
-    parser.add_argument("--trading-days", type=int, default=120,
-                        help="Sesiones bursátiles objetivo (por defecto 120 ≈ 9.400 velas).")
+    parser.add_argument(
+        "--trading-days", type=int,
+        default=int(os.environ.get("BACKFILL_DAYS", "500")),
+        help="Sesiones bursátiles objetivo (env BACKFILL_DAYS; por defecto 500 ≈ 2 años).",
+    )
     parser.add_argument("--dry-run", action="store_true",
                         help="Consulta la API pero no escribe en InfluxDB.")
     args = parser.parse_args()

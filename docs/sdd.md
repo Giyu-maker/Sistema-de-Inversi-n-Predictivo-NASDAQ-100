@@ -1,8 +1,8 @@
 # Software Design Description (SDD)
 ## Proyecto: Sistema de Inversión Predictivo NASDAQ-100 (RiTech-NASDAQ100)
 ## Cliente: RiTech SAS
-## Versión: 1.0 aprobado
-## Fecha: 30 de Agosto de 2026
+## Versión: 1.1 aprobado
+## Fecha: 17 de Octubre de 2026
 ## Organización: Naranja's Team
 
 ---
@@ -11,6 +11,7 @@
 | Nombre | Fecha | Motivo del Cambio | Versión |
 | :--- | :--- | :--- | :--- |
 | Naranja's Team | 30/08/2026 | Creación inicial del SDD | 1.0 |
+| Naranja's Team | 17/10/2026 | CR-001: `price_high`/`price_low` en `write_to_influx()` (§5.1.2) y nueva §3.1.2 con la entidad `NasdaqTick`; CR-003: guarda de inmutabilidad en `write_to_influx()` y operaciones `existing_timestamps()`/`write_candles_batch()` (§5.1) | 1.1 |
 
 ---
 
@@ -130,6 +131,25 @@ El sistema utilizará una aproximación híbrida de bases de datos locales:
 *   `ip_address`: `VARCHAR(45)` [NOT NULL]. Dirección IP del equipo en la intranet de RiTech.
 *   `payload`: `TEXT`. Detalles técnicos en formato JSON.
 
+#### 3.1.2 Entidad `NasdaqTick` (InfluxDB — series temporales)
+
+Medición única por vela de 5 minutos; el *timestamp* epoch ms es la clave lógica
+del punto. Alineada con SRS §4.2.2. *(Campos de rango añadidos en v1.1 — CR-001.)*
+
+| Campo | Tipo | Descripción |
+| :--- | :--- | :--- |
+| `time` | Timestamp (epoch ms) | Instante de la vela; identidad lógica del punto. |
+| `price_open` | Float | Precio de apertura. |
+| `price_high` | Float | Precio máximo de la vela. **(v1.1)** |
+| `price_low` | Float | Precio mínimo de la vela. **(v1.1)** |
+| `price_close` | Float | Precio de cierre. |
+| `volume` | Float | Volumen operado. |
+
+**Regla de integridad (CR-003):** InfluxDB 2.7 **no** garantiza la inmutabilidad
+— sobrescribe en silencio un punto con el mismo timestamp. La no-modificación del
+histórico la impone la capa de aplicación mediante una guarda *insert-if-absent*
+en `write_to_influx()`, descrita en §5.1.2.
+
 ---
 
 ## 4. Diseño UML
@@ -225,6 +245,9 @@ El sistema utilizará una aproximación híbrida de bases de datos locales:
 *   Interactuar con la API externa de Alpha Vantage de forma robusta.
 *   Normalizar los datos obtenidos en velas de 5 minutos.
 *   Escribir las series temporales en InfluxDB de forma asíncrona.
+*   **Garantizar la inmutabilidad del histórico (RF-103 / CR-003):** omitir la
+    escritura de un timestamp ya persistido, ya que InfluxDB 2.7 lo
+    sobrescribiría en silencio. *(v1.1)*
 
 #### 5.1.2 Especificación técnica de la Clase
 
@@ -243,8 +266,24 @@ class IngestionEngine:
         """Verifica que los datos no contengan valores nulos o ilógicos."""
         pass
 
-    async def write_to_influx(self, timestamp: int, open_p: float, close_p: float, vol: float) -> None:
-        """Persiste la vela en el bucket de InfluxDB local de forma transaccional."""
+    async def write_to_influx(
+        self, timestamp: int, open_p: float, high_p: float, low_p: float, close_p: float, vol: float
+    ) -> None:
+        """Persiste la vela en el bucket de InfluxDB local de forma transaccional.
+
+        CR-001 (v1.1): `high_p`/`low_p` añaden el rango de la vela, necesario
+        para las features de rango del modelo predictivo (RF-301).
+        CR-003: antes de escribir verifica que el timestamp no exista ya
+        (guarda *insert-if-absent*); si existe, no escribe y emite WARNING.
+        """
+        pass
+
+    async def existing_timestamps(self, timestamps: list[int]) -> set[int]:
+        """Devuelve qué timestamps del lote ya existen — una sola consulta de rango."""
+        pass
+
+    async def write_candles_batch(self, candles: list) -> tuple[int, int]:
+        """Escribe un lote de velas omitiendo las existentes (backfill). Devuelve (escritas, omitidas)."""
         pass
 ```
 

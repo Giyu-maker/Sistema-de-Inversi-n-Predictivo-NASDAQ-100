@@ -1,8 +1,8 @@
 # Software Requirements Specification (SRS)
 ## Proyecto: Sistema de Inversión Predictivo NASDAQ-100 (RiTech-NASDAQ100)
 ## Cliente: RiTech SAS
-## Versión: 1.0 aprobado
-## Fecha: 28 de Agosto de 2026
+## Versión: 1.1 aprobado
+## Fecha: 17 de Octubre de 2026
 ## Organización: Naranja's Team
 
 ---
@@ -11,6 +11,7 @@
 | Nombre | Fecha | Motivo del Cambio | Versión |
 | :--- | :--- | :--- | :--- |
 | Naranja's Team | 28/08/2026 | Creación inicial del SRS | 1.0 |
+| Naranja's Team | 17/10/2026 | CR-001: se añaden `price_high` y `price_low` a la entidad `NasdaqTick` (§4.2.2) para las features de rango del modelo predictivo (RF-301 a RF-304) | 1.1 |
 
 ---
 
@@ -245,8 +246,15 @@ El diseño almacena las relaciones locales entre la configuración, los datos te
 #### 4.2.2 Entidad `NasdaqTick` (InfluxDB - Time Series)
 *   `time`: Timestamp. Marca de tiempo única a nivel de nanosegundos (Epoch ms).
 *   `price_open`: Float. Precio de apertura de la vela de 5 minutos.
+*   `price_high`: Float. Precio máximo de la vela de 5 minutos. *(Añadido en v1.1 — CR-001)*
+*   `price_low`: Float. Precio mínimo de la vela de 5 minutos. *(Añadido en v1.1 — CR-001)*
 *   `price_close`: Float. Precio de cierre de la vela de 5 minutos.
 *   `volume`: Float. Volumen bursátil operado en la vela de 5 minutos.
+
+> **Nota de integridad (v1.1):** la inmutabilidad de esta entidad está garantizada
+> por la capa de aplicación mediante una guarda *insert-if-absent* — InfluxDB 2.7
+> sobrescribe un punto con el mismo timestamp por sí solo. Ver CR-003 en
+> `docs/change-requests.md`.
 
 #### 4.2.3 Entidad `AIPrediction` (PostgreSQL)
 *   `id`: UUID. Clave primaria.

@@ -52,7 +52,10 @@ def test_run_once_persiste_ultima_vela_y_calcula_variacion() -> None:
     asyncio.run(scheduler.run_once())
 
     expected_ts = parse_raw_candle("2026-10-06 09:35:00", _LATEST_RAW).timestamp
-    engine.write_to_influx.assert_awaited_once_with(expected_ts, 101.0, 102.0, 1000.0)
+    # Firma OHLC de SDD §5.1.2 (v1.1, CR-001): ts, open, high, low, close, volume
+    engine.write_to_influx.assert_awaited_once_with(
+        expected_ts, 101.0, 102.5, 100.5, 102.0, 1000.0
+    )
     expected_variation = ((102.0 - 101.0) / 101.0) * 100
     calculator.calculate_yield.assert_called_once()
     assert calculator.calculate_yield.call_args.args[0] == expected_variation

@@ -13,25 +13,61 @@ Documento de trazabilidad de cambios a los artefactos formales aprobados (SRS v1
 | **Documentos afectados** | SRS v1.0 §4.2.2 (Diccionario de Datos); SDD v1.0 §5.1 (firma de `write_to_influx`) |
 | **Tipo** | Corrección / clarificación de requisito |
 | **Prioridad** | Media |
-| **Estado** | Propuesto — pendiente de aprobación formal |
+| **Estado** | **Aprobada — 17/10/2026, por el equipo de desarrollo (Naranja's Team)** |
 
 ### Hallazgo
 - SRS §3.1.2 (narrativa de la Feature 1) establece que "la API devuelve el precio de apertura, cierre, **máximo, mínimo** y volumen de la vela de 5 minutos".
 - SRS §4.2.2 (Diccionario de Datos, entidad `NasdaqTick`) y SDD §5.1 (firma de `write_to_influx`) solo contemplan `price_open`, `price_close` y `volume` — **sin** `price_high` / `price_low`.
 - Es una inconsistencia real entre la narrativa del documento y sus propios artefactos formales (diccionario de datos y firma de clase), no una omisión introducida por el equipo de desarrollo.
 
-### Cambio propuesto
-- Agregar `price_high: Float` y `price_low: Float` a la entidad `NasdaqTick` en SRS §4.2.2.
-- Actualizar la firma de `write_to_influx()` en SDD §5.1 para incluir ambos parámetros.
+### Cambio aprobado (CR-001)
+- Agregar `price_high: Float` y `price_low: Float` a la entidad `NasdaqTick` en SRS §4.2.2. **(Hecho — SRS v1.1)**
+- Actualizar la firma de `write_to_influx()` en SDD §5.1 para incluir ambos parámetros, además de documentar la entidad `NasdaqTick` en SDD §3.1.2. **(Hecho — SDD v1.1)**
+- Ambas documentos reciben fila nueva en su historial de revisiones (v1.1, referencia a esta CR).
 
 ### Justificación
 Estos valores son necesarios como features de entrada para el modelo predictivo de IA (Feature 3, RF-301 a RF-304) planificado para Sprint 3. Omitirlos ahora obligaría a rediseñar el esquema de InfluxDB más adelante, con el costo de reprocesar o perder histórico ya capturado.
 
+**Confirmada durante el Sprint 3:** el dataset del modelo requiere el rango de la vela para las features de rango (rango relativo, posición del cierre dentro del rango y volatilidad por rango). Sin `price_high`/`price_low` persistidos esas features no existen, y el resto del histórico habría que reconstruirlo igualmente.
+
 ### Impacto
-Bajo. Cambio aditivo sobre dos documentos aprobados; no rompe compatibilidad con datos ya ingeridos.
+Bajo en diseño (cambio aditivo sobre dos documentos aprobados), **medio en datos**: exige reconstruir el bucket de InfluxDB, ver "Migración de datos" abajo.
 
 ### Estado de implementación
-El modelo Pydantic `NasdaqCandle` en el código ya valida y captura ambos campos. La firma pública de `write_to_influx()` se mantuvo **literal al SDD v1.0** mientras esta CR no se apruebe formalmente, para no romper trazabilidad con el documento aprobado. Marcado como `TODO(SRS-4.2.2)` en el código.
+- `NasdaqCandle` ya validaba y capturaba ambos campos desde el Sprint 2; lo que faltaba era **persistirlos**.
+- **17/10/2026 (Sprint 3):** con la CR aprobada, `write_to_influx()` acepta `high_p` y `low_p` en orden OHLC y los escribe; se retira el `TODO(SRS-4.2.2)` del código y se actualizan los tests.
+- La firma pública pasa de literal-a-SDD-v1.0 a **literal-a-SDD-v1.1**.
+
+### Migración de datos (requisito previo a ampliar el backfill)
+
+La CR-003 añadió una guarda *insert-if-absent*: **no reescribe un timestamp que ya existe**. Consecuencia directa sobre las 10.000 velas ya ingeridas: la guarda impediría añadirles `price_high`/`price_low`, dejando el bucket con dos esquemas distintos (velas del Sprint 2 a 3 campos, velas nuevas a 5 campos) y sin poder calcular las features de rango sobre el histórico.
+
+Por eso la adición de los campos **no puede ser incremental** y requiere una reconstrucción única:
+
+| Aspecto | Detalle |
+|---|---|
+| Herramienta | `python -m src.ingestion.rebuild --confirm-wipe` |
+| Confirmación | **Exige el flag `--confirm-wipe`.** Sin él, el script se niega y no toca nada |
+| Alcance | Borra los puntos `NasdaqTick` del bucket y vuelve a ingerir todo desde Twelve Data con la firma de 5 campos |
+| **¿Es una escritura destructiva del pipeline?** | **No.** Nunca se invoca desde el orquestador, el backfill ni ningún proceso automático: es una **migración manual, única y explícita**, previa a tener datos de producción reproducibles |
+| Reproducibilidad | Los datos se reobtienen de la misma fuente (`Twelve Data`, QQQ, 5 min) y se verifican por conteo y por rango de fechas tras la reconstrucción |
+| Relación con CR-003 | **No contradice el SRS §4.4.** La inmutabilidad protege el histórico **del pipeline en operación**; esta operación la realiza un administrador de forma consciente y documentada, antes de declarar los datos como definitivos |
+
+> **Nota de secuencia:** la migración se ejecuta **antes** de ampliar el backfill a 2 años, para reconstruir el bucket **una sola vez** y no dos.
+
+**Estado de la migración:** ✅ **Ejecutada el 17/10/2026** con `rebuild --confirm-wipe`.
+
+| Fase | Resultado |
+|---|---|
+| Estado previo | 10.000 puntos con **3 campos** (`price_open`, `price_close`, `volume`); `price_high`/`price_low` **ausentes** |
+| Borrado | `HTTP 204`, verificado: **0 puntos** `NasdaqTick` residuales |
+| Re-ingreso | `BACKFILL_DAYS=500` → **8 peticiones** de 5000, throttle 7.6 s, **69 s** en total |
+| Resultado | **40.000 puntos con los 5 campos** (`price_open`, `price_high`, `price_low`, `price_close`, `volume` — verificado por consulta de campos distintos y por conteo independiente de `price_high`) |
+| Rango | **2024-09-26 → 2026-10-16** (≈ 2 años) |
+| Sesiones | **516** totales, **509 completas** (78 velas), 7 incompletas (borde inferior/superior) |
+| Primera ejecución fallida | El predicado `_measurement == "NasdaqTick"` devolvió **400 "bad tag value"** (la API *delete* exige sintaxis `tag=valor`, no `==` de Flux). **No borró nada** — verificado por conteo antes de reintentar. Corregido a `_measurement=NasdaqTick` y protegido con test de regresión |
+
+**Ningún dato se perdió de forma irreversible:** todo se reobtuvo de la misma fuente (Twelve Data, QQQ, velas de 5 min) y se verificó por conteo y por rango antes/después.
 
 ---
 
@@ -160,3 +196,16 @@ La guarda es **read-then-write**: existe una ventana teórica de condición de c
 ### Impacto
 
 Bajo. Es una operación de lectura previa adicional en el mismo hilo de escritura (medida: sub-milisegundo sobre InfluxDB local). No rompe ninguna firma aprobada ni modifica datos ya ingeridos. La suite completa pasó de **53 a 63 tests** en verde.
+
+### Interacción con CR-001 (migración de datos, 17/10/2026)
+
+La guarda *insert-if-absent* **también bloquea la adición de campos a velas ya existentes**: no reescribe un punto existente, así que `price_high`/`price_low` (CR-001) no podrían añadirse al histórico ya ingerido. Se resuelve con la **migración única** `src/ingestion/rebuild.py --confirm-wipe`, que borra los puntos del bucket y lo reingiere completo con la firma de 5 campos desde la propia fuente.
+
+Queda explícito por escrito que esta operación:
+
+- **no forma parte del pipeline**: no la llama el orquestador, el backfill ni ningún proceso automático;
+- **exige confirmación explícita** (`--confirm-wipe`) y se niega sin ese flag;
+- **es previa a producción** y se ejecuta una sola vez, antes de ampliar el backfill, para no reconstruir dos veces;
+- **no viola el SRS §4.4**: la inmutabilidad protege el histórico *durante la operación normal*; esta acción es una migración consciente de un administrador sobre datos que se vuelven a obtener reproduciblemente desde el proveedor.
+
+Ver el detalle completo en CR-001, sección "Migración de datos".

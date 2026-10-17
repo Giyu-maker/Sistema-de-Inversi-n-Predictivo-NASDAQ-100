@@ -84,8 +84,8 @@ class NasdaqCandle(BaseModel):
 
     timestamp: int  # epoch ms (RF-103)
     price_open: float = Field(ge=0)
-    price_high: float = Field(ge=0)  # validado aquí; ver TODO(SRS-4.2.2) en write_to_influx
-    price_low: float = Field(ge=0)  # idem
+    price_high: float = Field(ge=0)  # CR-001 aprobada 17/10/2026 → se persisten (SDD §3.1.2)
+    price_low: float = Field(ge=0)   # idem
     price_close: float = Field(ge=0)
     volume: float = Field(ge=0)
 
@@ -161,33 +161,44 @@ class IngestionEngine:
                 return False
         return True
 
-    async def write_to_influx(self, timestamp: int, open_p: float, close_p: float, vol: float) -> None:
+    async def write_to_influx(
+        self,
+        timestamp: int,
+        open_p: float,
+        high_p: float,
+        low_p: float,
+        close_p: float,
+        vol: float,
+    ) -> None:
         """Persiste la vela en el bucket de InfluxDB local de forma transaccional.
 
         La escritura síncrona del cliente corre en un hilo aparte con
         `asyncio.to_thread` para no bloquear el event loop (una vela cada 5 min:
         no hay presión de concurrencia que justifique más).
 
+        CR-001 (SDD v1.1, aprobada 17/10/2026): los parámetros siguen el orden
+        OHLC y añaden `high_p`/`low_p`, el rango de la vela que necesitan las
+        features de rango del modelo predictivo (RF-301).
+
         RF-103 / CR-003 — guarda de inmutabilidad: si el timestamp ya existe en
         el bucket **no se escribe** y se emite un WARNING. InfluxDB sobrescribe
         el punto en silencio (verificado 06/10/2026), así que la no-modificación
         del histórico la garantiza esta capa, no el motor.
-
-        TODO(SRS-4.2.2): inconsistencia documental pendiente de change request
-        formal. El SRS 4.2.2 menciona el máximo y mínimo de la vela, y
-        `NasdaqCandle` sí valida `price_high`/`price_low`, pero esta firma
-        aprobada del SDD §5.1.2 no los captura. No se resuelve aquí por cuenta
-        propia: elevar el cambio sobre SRS/SDD v1.0.
         """
-        point = self._point(timestamp, open_p, close_p, vol)
+        point = self._point(timestamp, open_p, high_p, low_p, close_p, vol)
         await asyncio.to_thread(self._check_and_write_point, timestamp, point)
 
-    def _point(self, timestamp: int, open_p: float, close_p: float, vol: float) -> Point:
-        """Construye el punto `NasdaqTick` con los tres campos del SDD §5.1.2."""
+    @staticmethod
+    def _point(
+        timestamp: int, open_p: float, high_p: float, low_p: float, close_p: float, vol: float
+    ) -> Point:
+        """Construye el punto `NasdaqTick` con los cinco campos de SDD §3.1.2."""
         return (
             Point("NasdaqTick")
             .time(timestamp, WritePrecision.MS)
             .field("price_open", float(open_p))
+            .field("price_high", float(high_p))
+            .field("price_low", float(low_p))
             .field("price_close", float(close_p))
             .field("volume", float(vol))
         )
@@ -244,7 +255,10 @@ class IngestionEngine:
         missing = [c for c in ordered if c.timestamp not in existing]
         if missing:
             points = [
-                self._point(c.timestamp, c.price_open, c.price_close, c.volume)
+                self._point(
+                    c.timestamp, c.price_open, c.price_high, c.price_low,
+                    c.price_close, c.volume,
+                )
                 for c in missing
             ]
             write_api = self.influx_client.write_api(write_options=SYNCHRONOUS)

@@ -132,13 +132,19 @@ curl --request POST "http://127.0.0.1:8086/api/v2/query?org=ritech" \
       comercial licenciado. Límites Basic verificados en vivo: solo horario regular
       09:30–16:00 ET (78 velas de las ~192 del escenario RF-101; `prepost` exige
       plan Pro+) y NDX directo exige plan Grow+ (se usa QQQ como proxy).
-- [ ] **CR-001 — `price_high`/`price_low` (registrada en `docs/change-requests.md`,
-      pendiente de aprobación formal):** inconsistencia alto/bajo entre SRS y firma
-      SDD `write_to_influx` (marcado `TODO(SRS-4.2.2)` en el código).
-      *Impacto Sprint 3:* bloquea el uso de `price_high`/`price_low` como features
-      del modelo predictivo (RF-301); la primera versión del modelo trabaja con
-      apertura, cierre y volumen, que son los tres campos que la firma aprobada
-      sí persiste.
+- [x] **CR-001 — `price_high`/`price_low`: APROBADA e implementada (17/10/2026):**
+      SRS y SDD subidos a **v1.1** con fila nueva en su historial, firma
+      `write_to_influx()` en orden OHLC, `TODO(SRS-4.2.2)` retirado del código.
+      *Migración de datos (misma fecha):* la guarda CR-003 impedía añadir los
+      campos a las velas existentes, así que se reconstruyó el bucket con
+      `src/ingestion/rebuild.py --confirm-wipe` — **10.000 puntos de 3 campos →
+      40.000 puntos con los 5 campos**, rango 2024-09-26 → 2026-10-16, 516
+      sesiones (509 completas). Herramienta **manual y fuera del pipeline**;
+      exige el flag de confirmación. Detalle en `docs/change-requests.md`
+      (CR-001 y CR-003).
+      *Nota de API:* la API *delete* de InfluxDB 2.x rechaza la sintaxis
+      `==` (400 "bad tag value"); exige `tag=valor`. Primera ejecución falló
+      **sin borrar nada** y se protegió con test de regresión.
 - [ ] **CR-003 — inmutabilidad del histórico (implementada y verificada, pendiente
       de aprobación formal):** ver §5 de este checklist y `docs/change-requests.md`.
 - [ ] **Deuda `TODO(RF-204)`:** ventanas de exclusión (registrada en `docs/backlog.md`).
