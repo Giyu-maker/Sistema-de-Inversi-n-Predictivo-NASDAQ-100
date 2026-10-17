@@ -6,6 +6,7 @@ Contexto persistente para cualquier agente de codificación (OpenCode, Claude Co
 - `docs/srs.md` — Software Requirements Specification completo (todos los RF-XXX, RNF-XXX, REST-XXX con su texto exacto)
 - `docs/sdd.md` — Software Design Description completo (esquema físico de BD, UML, clases detalladas)
 - `docs/backlog.md` — Product Backlog y planificación de sprints
+- `docs/change-requests.md` — Registro de cambios formales a SRS/SDD (CR-001: campos `price_high`/`price_low`; CR-002: proveedor de datos Alpha Vantage → Twelve Data, RF-102 parcialmente cubierto)
 
 Cuando una tarea requiera el texto exacto de un requisito, una firma de clase completa, o cualquier detalle no cubierto abajo, **lee el archivo fuente correspondiente en `docs/` antes de asumir nada.** Este resumen puede quedar desactualizado si el SRS/SDD se revisan; los archivos en `docs/` son la fuente de verdad.
 

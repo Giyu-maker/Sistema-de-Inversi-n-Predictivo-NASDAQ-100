@@ -51,6 +51,9 @@ El desarrollo del sistema para RiTech SAS se distribuye de manera balanceada en 
 *   **Deuda conocida del Sprint 2 — RF-204: Exclusión de Operación en Volatilidad Extrema**
     *   *Descripción:* Implementar en `AsymmetricCalculator` las ventanas de exclusión (primeros y últimos 15 minutos del horario regular de mercado). Quedó fuera del Ítem 6 del Sprint 2 por prioridad Media en el SRS y por no bloquear el Walking Skeleton; marcado en código como `TODO(RF-204)`. No implementar a medias: requiere decidir el estado de sesión completo.
     *   *Requisito:* RF-204.
+*   **Hallazgo de verificación del Sprint 2 — RNF-003: el ciclo real supera los 500 ms**
+    *   *Descripción:* Medido en vivo en la Máquina 2 (06/10/2026) contra Twelve Data + InfluxDB real: el ciclo completo fetch→validate→write→calculate tomó 1116 / 678 / 540 ms (3 muestras) — 3/3 por encima de 500 ms. El 89–95% es el HTTP externo a Twelve Data; el procesamiento local fue 6–59 ms. RNF-003 (SRS §6.2) acota el requisito "en el servidor local" e incluye además el modelo de IA y la UI (Sprint 3), aún inexistentes. Registrado **sin optimizar**, para decisión del equipo: definir si el fetch externo cuenta para RNF-003 o solo para RF-101, y en caso afirmativo evaluar caché del último candle / RTT exigido al proveedor. Detalle y cronómetro en `docs/checklist_m2.md` §7.
+    *   *Requisito:* RNF-003.
 
 #### SPRINT 4: Seguridad Operativa, Integración con Broker y Cierre
 *   **Objetivo:** Implementar los mecanismos de protección de capital (Kill-Switch), auditoría inmutable, notificaciones locales e integración real en cuenta Sandbox con Interactive Brokers para habilitar el Modo Sombra.
