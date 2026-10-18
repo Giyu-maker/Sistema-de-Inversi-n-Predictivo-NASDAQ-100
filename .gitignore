@@ -11,3 +11,6 @@ __pycache__/
 
 # Salidas generadas localmente
 graphify-out/
+
+# Artefactos de IA: se generan reentrenando, no se versionan (ver AGENTS.md §15)
+models/
