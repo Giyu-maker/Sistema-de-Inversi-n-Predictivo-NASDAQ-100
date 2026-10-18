@@ -473,15 +473,81 @@ class TestGuardado:
         assert ruta_informe.endswith(".metrics.json")
 
         activo = json.loads((tmp_path / "active.json").read_text(encoding="utf-8"))
-        assert activo["path"] == rutas["mlp"]
+        # Las rutas del puntero son **relativas al propio puntero**: solo el
+        # nombre del archivo. Antes salían relativas a la raíz del proyecto
+        # (`models/x.pt`), y quien leía el puntero construía
+        # `models/models/x.pt`, que no existe. Ver `ruta_desde_puntero`.
+        assert activo["path"] == Path(rutas["mlp"]).name
         assert activo["arquitectura"] == "mlp"
-        assert activo["disponibles"] == rutas
+        assert activo["disponibles"] == {
+            tipo: Path(ruta).name for tipo, ruta in rutas.items()
+        }
 
         assert load_artifact(rutas["mlp"])["model_type"] == "mlp"
         cargado_lineal = load_artifact(rutas["linear"])
         assert cargado_lineal["model_type"] == "linear"
         assert cargado_lineal["metrics"]["macro_f1_test"] == pytest.approx(0.44)
         assert cargado_lineal["metrics"]["confianza"] == "posterior corregido por prior"
+
+    def test_el_puntero_que_escribe_se_puede_leer_sin_depender_de_donde_se_ejecuta(
+            self, ds, modelos, pesos, tmp_path: Path, monkeypatch, tmp_path_factory) -> None:
+        """Regresión del bug de despliegue del PASO 3.
+
+        `src.ai.train` guardaba la ruta relativa a la **raíz del proyecto**
+        (`models/x.pt`) y `src.ai.serve` la resolvía contra el directorio que
+        contiene `active.json`, de modo que el servicio buscaba
+        `models/models/x.pt` y no arrancaba.
+
+        Pasaba inadvertido en desarrollo porque `MODEL_PATH` apuntaba al `.pt`
+        suelto y esa rama ni se ejecutaba; aparece al poner `MODEL_PATH` al
+        directorio, que es como corre en la Máquina 1. Por eso este test no
+        comprueba que el archivo exista — eso ya lo hacía el anterior —, sino
+        que la resolución **no depende del directorio de trabajo**: se cambia a
+        un directorio distinto y el puntero sigue resolviéndose igual.
+
+        Con la ruta relativa a la raíz, este test falla: desde otro `cwd` no
+        hay `models/` que encontrar.
+        """
+        from src.ai.model import ruta_desde_puntero
+        from src.ai.train import _guardar
+
+        rutas, _ = _guardar(tmp_path, "20261018T000000Z", "mlp",
+                             self._entrenadas(modelos), pesos, ds, "cpu",
+                             self._informe())
+        puntero = tmp_path / "active.json"
+        assert ruta_desde_puntero(puntero) == Path(rutas["mlp"])
+
+        # Se ejecuta desde un directorio que no tiene nada que ver con los
+        # modelos: la resolución debe seguir dando el mismo archivo.
+        otro = tmp_path_factory.mktemp("trabajo-distinto")
+        monkeypatch.chdir(otro)
+        assert ruta_desde_puntero(puntero) == Path(rutas["mlp"])
+
+    def test_un_puntero_apuntando_a_un_archivo_inexistente_da_un_mensaje_accionable(
+            self, tmp_path: Path) -> None:
+        """No basta con fallar: hay que decir qué hacer.
+
+        El puntero roto se descubre en la Máquina 1, en un arranque, y la
+        tentación es tocar el servicio. El mensaje apunta al reentrenamiento,
+        que es lo único que vuelve a escribir el puntero bien.
+        """
+        from src.ai.model import ruta_desde_puntero
+
+        puntero = tmp_path / "active.json"
+        puntero.write_text(json.dumps({"path": "models/que-no-existe.pt"}), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="reentrenar"):
+            ruta_desde_puntero(puntero)
+
+    def test_un_puntero_sin_la_llave_path_no_pasa_en_blanco(
+            self, tmp_path: Path) -> None:
+        from src.ai.model import ruta_desde_puntero
+
+        puntero = tmp_path / "active.json"
+        puntero.write_text(json.dumps({"otra": "cosa"}), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="no declara 'path'"):
+            ruta_desde_puntero(puntero)
 
     def test_puede_dejar_activo_el_lineal_sin_reentrenar(
             self, ds, modelos, pesos, tmp_path: Path) -> None:
@@ -491,7 +557,7 @@ class TestGuardado:
                                        self._informe())
         activo = json.loads((tmp_path / "active.json").read_text(encoding="utf-8"))
         assert activo["arquitectura"] == "linear"
-        assert activo["path"] == rutas["linear"]
+        assert activo["path"] == Path(rutas["linear"]).name
         assert ruta_informe.endswith("ritech-linear-20261018T000000Z.metrics.json")
 
     def test_los_pesos_de_clase_llegan_al_artefacto(

@@ -1,0 +1,63 @@
+# RiTech-NASDAQ100 — reentrenamiento diario del modelo (RF-302) — Máquina 1
+#
+# Instalar en /etc/systemd/system/. Ver `deploy/m1/setup.sh` y `docs/despliegue.md`.
+#
+# Es un `oneshot`: corre, escribe el artefacto y termina. **No** es un daemon
+# y no debe tener `Restart=`, porque un reentrenamiento que falla es un dato
+# que hay que leer, no un problema que haya que maquillar reiniciando.
+#
+# El desencadenante es `ritech-retrain.timer`; también se puede disparar a mano:
+#     systemctl start ritech-retrain.service
+
+[Unit]
+Description=RiTech — reentrenamiento diario del modelo predictivo
+Documentation=file:///opt/ritech/docs/despliegue.md
+# El reentrenamiento sí necesita InfluxDB: lee las velas para construir el
+# dataset. Que arranque después del contenedor evita el primer fallo por
+# conexión rechazada en el arranque del equipo.
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ritech
+Group=ritech
+WorkingDirectory=/opt/ritech
+EnvironmentFile=/etc/ritech/m1.env
+Environment=LC_ALL=C.UTF-8
+Environment=TZ=America/Bogota
+
+# El reentrenamiento del día se sirve solo si el artefacto resultante carga.
+# `promote.sh` hace la comprobación, mueve `active.json` y reinicia el servicio
+# de inferencia; si algo falla, revierte `active.json` y devuelve un código
+# distinto de cero para que el timer quede en `failed` y se pueda ver.
+ExecStart=/opt/ritech/deploy/m1/promote.sh
+
+# La corrida de un día es larga (entrena dos arquitecturas y corre 2.000
+# réplicas de bootstrap). El tope es un salvavidas, no una expectativa:
+# corta antes de quedarse colgado para siempre.
+TimeoutStartSec=2h
+
+# Se cede la CPU y la E/S al sistema: la operación no debe notar que hay un
+# entrenamiento detrás. La GPU sí se usa entera, que es para lo que está.
+Nice=10
+IOSchedulingClass=idle
+CPUSchedulingPolicy=other
+
+# --- endurecimiento ---------------------------------------------------------
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+# Solo puede escribir donde escribe `src.ai.train`: el directorio de modelos.
+ReadWritePaths=/opt/ritech/models
+
+[Install]
+WantedBy=multi-user.target

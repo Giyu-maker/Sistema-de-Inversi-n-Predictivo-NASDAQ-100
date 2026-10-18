@@ -1,0 +1,43 @@
+# RiTech-NASDAQ100 — timer del reentrenamiento diario (RF-302) — Máquina 1
+#
+# Instalar en /etc/systemd/system/. Ver `deploy/m1/setup.sh` y `docs/despliegue.md`.
+#
+# Dispara `ritech-retrain.service`. Se inspecciona con:
+#     systemctl list-timers ritech-retrain.timer
+#     journalctl -u ritech-retrain.service
+
+[Unit]
+Description=RiTech — reentrenamiento diario del modelo predictivo
+Documentation=file:///opt/ritech/docs/despliegue.md
+
+[Timer]
+# RF-302: reentrenamiento automático al cierre de cada jornada bursátil, y el
+# SRS §4.3 lo fija a partir de las 8:00 PM hora de Nueva York.
+#
+# Se expresa en hora **Colombia** (UTC-5 todo el año, sin horario de verano)
+# para que el schedule no se mueva dos veces por año. Elegir la zona del
+# servidor habría hecho que la misma línea significara 20:30 en invierno y
+# 19:30 en verano, y en verano eso caería ANTES de la hora mínima que fija el
+# SRS. Con America/Bogota a las 20:30 se cumple en las dos estaciones:
+#
+#   verano (EDT, UTC-4): 20:30 CO = 21:30 ET — 5,5 h después del cierre
+#   invierno (EST, UTC-5): 20:30 CO = 20:30 ET — 4,5 h después del cierre
+#
+# Ambas por encima de las 20:00 ET que exige el SRS. Se usa tarde a propósito:
+# el dataset del día solo está completo cuando InfluxDB ya tiene las velas de
+# toda la sesión, y apurar la hora ganaría minutos a cambio de entrenar con un
+# día incompleto.
+OnCalendar=*-*-* 20:30:00 America/Bogota
+
+# Si la Máquina 1 estuviera apagada a esa hora, al arrancar ejecuta el
+# reentrenamiento omitido. Sin esto, un lunes encendido tras un fin de semana
+# apagado dejaría al modelo sin reentrenar hasta el martes, en silencio.
+Persistent=true
+
+# Un reentrenamiento que no arranca porque el equipo se acaba de encender no
+# debe pisar al que viene después: se espera un poco para que el arranquista
+# termine y el InfluxDB esté aceptando conexiones.
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

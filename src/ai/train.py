@@ -626,15 +626,26 @@ def _guardar(salida: Path, marca: str, activa: str,
     # Puntero al artefacto activo: lo usan el servicio de inferencia de M1 y el
     # timer de reentrenamiento. Archivo de texto, no enlace simbólico, para no
     # acoplar el código a las convenciones de un SO concreto (convención 5.4).
+    #
+    # Las rutas se guardan **relativas al propio puntero** y no a la raíz del
+    # proyecto. La diferencia es `models/x.pt` contra `x.pt`: con la primera,
+    # quien lee el puntero (resolviendo contra su directorio) construye
+    # `models/models/x.pt` y el servicio de M1 no arranca. Ver el detalle y el
+    # porqué en `src.ai.model.ruta_desde_puntero`, que es la única regla.
+    # `relative_to` revienta aquí si alguna vez los artefactos dejan de
+    # escribirse en `salida`, que es preferible a guardar una ruta que nadie
+    # podrá resolver después de pagar entero el entrenamiento.
+    relativas = {tipo: Path(ruta).relative_to(salida) for tipo, ruta in rutas.items()}
+
     (salida / "active.json").write_text(
         json.dumps(
             {
-                "path": rutas[activa],
+                "path": str(relativas[activa]),
                 "arquitectura": activa,
                 "entrenado_en": marca,
                 "esquema": FEATURE_SCHEMA_VERSION,
                 "confianza": "posterior corregido por prior",
-                "disponibles": rutas,
+                "disponibles": {tipo: str(ruta) for tipo, ruta in relativas.items()},
             },
             indent=2,
         ),

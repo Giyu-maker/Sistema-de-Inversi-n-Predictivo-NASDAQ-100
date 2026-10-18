@@ -1,19 +1,56 @@
 [project]
 name = "ritech-nasdaq100"
 version = "0.1.0"
-description = "Backend RiTech-NASDAQ100 — Sprint 2 (Walking Skeleton)"
+description = "Backend RiTech-NASDAQ100 — Sprint 3 (IA predictiva local)"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    # -------------------------------------------------------------------------
+    # Lo que corre en las TRES máquinas. Ninguno de estos necesita GPU.
+    # -------------------------------------------------------------------------
     "cryptography>=42",
+    # `httpx` sostiene dos cosas distintas: la ingesta de Twelve Data y el
+    # cliente de inferencia (`src/ai/client.py`), que por eso NO necesita torch.
     "httpx>=0.27",
     "influxdb-client>=1.40",
     "numpy>=2",
     "pydantic>=2.7",
-    # `torch` NO va aquí. Vive en el grupo `ai` y solo se instala en M1 (CUDA)
-    # y en M2 (CPU, solo para pruebas). Ver PASO 3 / docs/despliegue.md.
+    # `torch` NO va aquí. Vive en los grupos `ai-cpu` / `ai-cuda` abajo: la
+    # Máquina 1 instala el de CUDA y la Máquina 2 el de CPU, y una misma
+    # instalación no puede llevar las dos ruedas. Ver `docs/despliegue.md` §3.
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
+# `ai` — lo que necesita el código de IA **sin** el propio torch: el servicio
+# de inferencia de M1 y las pruebas. `fastapi` y `uvicorn` están aquí, y no en
+# base, porque FastAPI se permite únicamente para este servicio en esta fase
+# (decisión §15).
+ai = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+]
+
+# `ai-cpu` y `ai-cuda` llevan LA MISMA versión de torch, fijada exacta: las dos
+# máquinas deben correr idéntico para que un artefacto sea verdaderamente
+# portable (se entrena en una y se sirve en otra). Lo que cambia entre ellas no
+# es la versión, sino el **índice** de donde sale la rueda, y eso está declarado
+# en `[tool.uv.sources]`.
+#
+# Los dos grupos están declarados en conflicto en `[tool.uv]`, que es la forma
+# que tiene uv de guardar las dos variantes en UN solo `uv.lock` — el lockfile
+# es universal y no podría contener dos ruedas distintas para la misma
+# plataforma si no se le dice que son excluyentes. Cada máquina elige la suya:
+#
+#     M1 (GPU):   uv sync --no-dev --group ai --group ai-cuda
+#     M2 (dev):   uv sync --group ai --group ai-cpu
+#
+# Elegir ninguno de los dos deja el entorno sin torch, y las pruebas de IA
+# revientan enseguida: es ruidoso, no silencioso.
+ai-cpu = ["torch==2.9.1"]
+ai-cuda = ["torch==2.9.1"]
+
+# `dev` no arrastra `ai` a propósito: `uv sync` por sí solo no debe bajar torch
+# en una máquina que no vaya a usarlo. Es el grupo especial que uv sincroniza
+# por defecto, por eso la Máquina 1 lleva `--no-dev`.
 dev = [
     "pytest>=8",
 ]
@@ -21,3 +58,42 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.uv]
+# `ai-cpu` y `ai-cuda` no pueden estar activos a la vez: cada máquina instala
+# UNA variante de torch. Sin esto, uv rechazaría el lockfile al encontrar dos
+# ruedas distintas para la misma plataforma y el mismo nombre de paquete.
+conflicts = [
+    [
+        { group = "ai-cpu" },
+        { group = "ai-cuda" },
+    ],
+]
+
+[tool.uv.sources]
+# De qué índice sale torch según el grupo que se haya pedido. Sin `--group
+# ai-cpu` o `--group ai-cuda` no se resuelve torch desde ninguna parte, que es
+# deliberado: el hardware no se adivina.
+torch = [
+    { index = "pytorch-cpu", group = "ai-cpu" },
+    { index = "pytorch-cuda", group = "ai-cuda" },
+]
+
+# `explicit = true` en ambos: uv solo usa este índice para los paquetes que se
+# le han declarado aquí, y todo lo demás sigue saliendo de PyPI. Sin eso, un
+# nombre genérico de paquete podría resolverse sin querer contra un índice de
+# torch.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+# cu126, y no cu128 ni cu130, por el driver: torch reparte las librerías de
+# CUDA con la rueda, así que lo único que hace falta en la Máquina 1 es un
+# driver bastante antiguo, y cu126 es el que menos pide. La GTX 1660 SUPER
+# (Turing, sm_75) es compatible. Si la Máquina 1 llega a tener un driver
+# reciente, subir a cu128 es cambiar esta URL y volver a bloquear.
+[[tool.uv.index]]
+name = "pytorch-cuda"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true

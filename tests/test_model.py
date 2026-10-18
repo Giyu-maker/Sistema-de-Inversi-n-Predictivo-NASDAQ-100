@@ -11,6 +11,7 @@ rompen el sistema de formas silenciosa:
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -340,6 +341,54 @@ class TestVersionDeEsquema:
     def test_la_version_viaja_en_el_artefacto(self, tmp_path: Path) -> None:
         cargado = load_artifact(save_artifact(_artefacto(), tmp_path / "m.pt"))
         assert cargado["feature_schema_version"] == FEATURE_SCHEMA_VERSION
+
+
+class TestAceptaLaConfiguracionDeDespliegue:
+    """Lo mismo que acepta `MODEL_PATH` en la Máquina 1.
+
+    En despliegue `MODEL_PATH` apunta al **directorio** (`/opt/ritech/models`),
+    que es lo que permite reentrenar sin reconfigurar. Pasarle a esta clase el
+    puntero —que es lo que trae esa configuración— acababa en un
+    `UnpicklingError` de torch intentando leer un JSON como si fuera un
+    `torch.save`, con un mensaje sobre «unsupported operand» que no dice nada de
+    lo que ha pasado. Aparece en un arranque, en la máquina que menos tiene que
+    ver con el código, y a una hora en la que nadie quiere descifrar trazas.
+    """
+
+    def _montar(self, tmp_path: Path) -> tuple[Path, Path]:
+        """Escribe el artefacto y el puntero que lo apunta (relativo al puntero)."""
+        ruta = save_artifact(_artefacto(), tmp_path / "m.pt")
+        (tmp_path / "active.json").write_text(
+            json.dumps({"path": "m.pt", "arquitectura": "mlp"}), encoding="utf-8"
+        )
+        return ruta, tmp_path / "active.json"
+
+    def test_acepta_el_directorio_del_despliegue(self, tmp_path: Path) -> None:
+        ruta, _ = self._montar(tmp_path)
+        modelo = LocalPredictiveModel(str(tmp_path))
+        assert modelo.model_path == str(ruta)
+
+    def test_acepta_el_puntero(self, tmp_path: Path) -> None:
+        _, puntero = self._montar(tmp_path)
+        modelo = LocalPredictiveModel(str(puntero))
+        assert modelo.model_path == str(puntero.with_name("m.pt"))
+
+    def test_un_archivo_pt_suelt_no_pasa_por_el_puntero(self, tmp_path: Path) -> None:
+        """La ruta válida hasta ahora no puede haber cambiado de significado."""
+        ruta, _ = self._montar(tmp_path)
+        modelo = LocalPredictiveModel(str(ruta))
+        assert modelo.model_path == str(ruta)
+
+    def test_un_directorio_vacio_dice_que_no_hay_modelo(self, tmp_path: Path) -> None:
+        """No un error de pickle: un mensaje que dice qué falta y por qué."""
+        (tmp_path / "otra-cosa.txt").write_text("x", encoding="utf-8")
+        with pytest.raises(ValueError, match="active.json"):
+            LocalPredictiveModel(str(tmp_path))
+
+    def test_una_ruta_inexistente_sigue_dando_file_not_found(self, tmp_path: Path) -> None:
+        """Lo que no es configuración de despliegue no se toca: mensaje habitual."""
+        with pytest.raises(FileNotFoundError):
+            LocalPredictiveModel(str(tmp_path / "no_existe.pt"))
 
 
 # ---------------------------------------------------------------------------

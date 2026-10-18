@@ -1,0 +1,76 @@
+# RiTech-NASDAQ100 — servicio de inferencia de la Máquina 1 (RF-303, RF-304)
+#
+# Instalar en /etc/systemd/system/. Ver `deploy/m1/setup.sh` y `docs/despliegue.md`.
+#
+# Es el ÚNICO proceso que corre en la Máquina 1 y el único punto por el que
+# el resto del sistema le pide una predicción. Deliberadamente pequeño:
+# /health y /predict, nada más. Ver `src/ai/serve.py`.
+
+[Unit]
+Description=RiTech — servicio de inferencia local (Máquina 1)
+Documentation=file:///opt/ritech/docs/despliegue.md
+# Sin `Requires=influxdb`: el servicio NO habla con InfluxDB. Solo la lee el
+# reentrenamiento (`ritech-retrain.service`). Si se acoplaran aquí, una
+# caída del bucket bajaría la inferencia, que no lo necesita para responder
+# a las peticiones que ya le hacen.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=ritech
+Group=ritech
+WorkingDirectory=/opt/ritech
+
+# Falla ruidosamente si no está: sin MODEL_PATH el servicio no tiene modelo
+# que servir, y es mejor descubrirlo al arrancar que en la primera petición.
+EnvironmentFile=/etc/ritech/m1.env
+
+# Se fija el locale y la zona horaria para que los mensajes de error y las
+# marcas de tiempo del XAI salgan iguales que en el entrenamiento.
+Environment=LC_ALL=C.UTF-8
+Environment=TZ=America/Bogota
+
+ExecStart=/opt/ritech/.venv/bin/python -m src.ai.serve
+
+# Reinicio automático: un servicio de inferencia caído deja al sistema ciego.
+Restart=on-failure
+RestartSec=5
+# Con esto, un artefacto corrupto que no se pueda cargar no entra en bucle
+# infinito: tras 5 fallos en 10 minutos systemd deja de intentarlo y el
+# problema queda a la vista en `systemctl status`.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+# El modelo se carga en el arranque y no por petición, así que el proceso
+# puede tardar unos segundos en estar listo. El timeout cubre la carga del
+# state_dict en la GPU.
+TimeoutStartSec=60
+
+# --- endurecimiento ---------------------------------------------------------
+# Nada de esto es opcional en un sistema que maneja dinero.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=false        # la GPU necesita acceso a /dev/nvidia*
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+# `MemoryDenyWriteExecute=true` NO se usa, a diferencia de lo habitual en un
+# servicio endurecido. Deniega crear mapeos de memoria anónimos escritores y
+# ejecutables a la vez, que es lo que algunos runtimes de torch/CUDA necesitan
+# al cargar. El riesgo de dejarlo activo (un fallo de CUDA difícil de
+# diagnosticar en producción) pesa más que el que cubre aquí, donde el código
+# que corre es nuestro y el proceso ya va en un usuario dedicado con
+# `ProtectSystem=strict`.
+# `ProtectSystem=strict` vuelve de solo lectura todo el sistema salvo las rutas
+# declaradas aquí. Sin esta línea el servicio no podría escribir en models/.
+ReadWritePaths=/opt/ritech/models
+
+[Install]
+WantedBy=multi-user.target

@@ -26,6 +26,7 @@ inversa.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -228,6 +229,60 @@ def load_artifact(path: str | Path, *, map_location: str | torch.device = "cpu")
     return torch.load(origen, map_location=map_location, weights_only=True)  # type: ignore[call-arg]
 
 
+def ruta_desde_puntero(puntero: str | Path) -> Path:
+    """Resuelve `active.json` al `.pt` que nombra.
+
+    **Regla única: las rutas que escribe `src.ai.train` en `active.json` son
+    relativas al propio puntero** — es decir, el nombre del archivo. Si el
+    puntero es absoluto se respeta tal cual.
+
+    La regla existe, y no otra, por un bug de despliegue que solo se veía al
+    poner el sistema en su sitio: `src.ai.train` escribía `models/x.pt`
+    (relativo a la **raíz del proyecto**) mientras el lector la resolvía contra
+    el directorio que contiene el puntero, de modo que el servicio buscaba
+    `models/models/x.pt` y no existía. Durante el desarrollo pasaba
+    inadvertido porque `MODEL_PATH` apuntaba al `.pt` suelto y esta rama no se
+    ejecutaba; es exactamente la clase de fallo que aparece en la Máquina 1 y
+    en ninguna prueba de la Máquina 2.
+
+    Por eso está aquí y no duplicada en `src.ai.serve` y en
+    `deploy/m1/check_artifact.py`: quien escribe y quien lee deben acordar la
+    convención en un solo sitio, y este módulo es el dueño del formato del
+    artefacto (`ARTIFACT_FORMAT_VERSION`, `save_artifact`, `load_artifact`).
+
+    Mover la carpeta de modelos entera no rompe nada con esta convención, y no
+    se depende del directorio de trabajo desde el que se arranca el servicio,
+    que en despliegue fija la unidad systemd y en desarrollo varía.
+    """
+    origen = Path(puntero)
+    if not origen.is_file():
+        raise ValueError(f"no existe el puntero {origen}")
+
+    try:
+        activo = json.loads(origen.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{origen} no es JSON válido: {exc}") from exc
+
+    if not isinstance(activo, dict) or "path" not in activo:
+        claves = sorted(activo) if isinstance(activo, dict) else type(activo).__name__
+        raise ValueError(f"{origen} no declara 'path'; contiene {claves}")
+
+    ruta = Path(activo["path"])
+    if ruta.is_absolute():
+        resuelta = ruta
+    else:
+        resuelta = origen.parent / ruta
+
+    if not resuelta.is_file():
+        raise ValueError(
+            f"el puntero {origen} apunta a {resuelta}, que no existe. Si el "
+            f"puntero es anterior a esta convención, la ruta guardada estaba "
+            f"relativa a la raíz del proyecto y hay que reentrenar con "
+            f"`python -m src.ai.train` para que vuelva a escribirse bien."
+        )
+    return resuelta
+
+
 def check_schema_version(artifact: dict[str, Any]) -> None:
     """Rechaza un artefacto entrenado con otro esquema de features.
 
@@ -260,14 +315,43 @@ def make_model(model_type: str, model_config: dict[str, Any]) -> nn.Module:
 class LocalPredictiveModel:
     """SDD §5.3 — carga el modelo local y ejecuta inferencia con XAI y confianza."""
 
+    @staticmethod
+    def _resolver_ruta(destino: str) -> str:
+        """De un valor de `MODEL_PATH` a la ruta del `.pt`.
+
+        Tres formas válidas y ninguna más: un archivo `.pt`, el directorio que
+        contiene `active.json`, o el propio `active.json`. Lo que no sea nada de
+        eso se devuelve tal cual, para que `load_artifact` siga dando su
+        `FileNotFoundError` habitual — aquí no se inventan mensajes para rutas
+        que simplemente no existen.
+        """
+        ruta = Path(destino)
+        if ruta.is_dir() or ruta.name == "active.json":
+            puntero = ruta if ruta.name == "active.json" else ruta / "active.json"
+            if not puntero.is_file():
+                raise ValueError(
+                    f"{ruta} no es un artefacto .pt ni un directorio que contenga "
+                    f"active.json: todavía no se ha entrenado ningún modelo allí."
+                )
+            return str(ruta_desde_puntero(puntero))
+        return str(ruta)
+
     def __init__(self, model_path: str):
         # Selección de dispositivo literal al SDD; en M1 hay CUDA y en M2 no.
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        # Acepta lo mismo que acepta `MODEL_PATH`: el `.pt` suelto, el directorio
+        # que contiene `active.json`, o el propio `active.json`. Sin esto,
+        # pasarle el puntero —que es lo que trae el entorno de despliegue—
+        # acababa en un `UnpicklingError` de torch intentando leer JSON, que no
+        # dice nada de lo que ha pasado. Se comprueba en el servicio, pero esta
+        # clase es la que ejecuta el código y no debe depender de que el que la
+        # llame lo tenga presente.
+        ruta = self._resolver_ruta(model_path)
         # Los bytes se leen UNA vez aquí; load_model construye el módulo a partir
         # de este dict. Se conserva el parámetro `path` por firma del SDD.
-        self.artifact = load_artifact(model_path, map_location=self.device)
+        self.artifact = load_artifact(ruta, map_location=self.device)
         check_schema_version(self.artifact)
-        self.model = self.load_model(model_path)
+        self.model = self.load_model(ruta)
 
         # Metadatos que run_inference necesita para normalizar y explicar.
         self.feature_names: tuple[str, ...] = tuple(self.artifact["feature_names"])
@@ -285,6 +369,17 @@ class LocalPredictiveModel:
                 "Reentrenar con la versión actual del código."
             )
         self.class_weights = np.asarray(self.artifact["class_weights"], dtype=np.float64)
+        # Metadatos que el servicio de inferencia declara en `/health` y
+        # `/predict` (RF-303 y RF-304: lo que se adjunta a cada predicción).
+        # Sin ellos M2 no podría comprobar la compatibilidad del contrato sin
+        # confiar en que se desplegó el artefacto correcto.
+        self.model_type: str = str(self.artifact["model_type"])
+        self.feature_schema_version: str = str(self.artifact["feature_schema_version"])
+        self.artifact_format: int = int(self.artifact["artifact_format"])
+        # La ruta resuelta, no la que entró: es lo que expone `/health` como
+        # `artefacto`, y decir "qué modelo se sirve" sin haberlo resuelto
+        # sería decirlo a medias.
+        self.model_path: str = ruta
 
     def load_model(self, path: str) -> nn.Module:
         """Carga los pesos de la red neuronal directamente en la GPU local.
