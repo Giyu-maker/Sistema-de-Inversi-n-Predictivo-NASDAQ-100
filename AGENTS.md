@@ -182,3 +182,56 @@ Aplica a Sprint 3 y posteriores. Objetivo: **en la otra máquina solo haya que i
 - **Modo Sombra:** simulación con datos reales sin comprometer capital real.
 - **Kill-Switch:** protocolo que cierra todas las operaciones y bloquea el sistema ante pérdidas severas o fallos.
 - **XAI:** explicabilidad de las decisiones de la IA para fines de auditoría.
+
+## 17. Herramientas de diseño (Fase B)
+
+Herramientas de dirección visual y QA de UI instaladas a nivel de **proyecto** (nada global) para el dashboard de la Fase B. El código de terceros vive en carpetas ignoradas por git; solo se versionan los metadatos (`skills-lock.json`) y esta documentación.
+
+### 17.1 Qué hay instalado y dónde
+
+| Herramienta | Ruta | Notas |
+|---|---|---|
+| Skills de diseño (8) | `.agents/skills/` | `find-skills`, `emil-design-eng`, `review-animations`, `animation-performance`, `break-ui`, `pick-ui-library`, `minimalist-ui`, `full-output-enforcement` |
+| Impeccable | `.opencode/skills/impeccable/` + `.opencode/commands/impeccable.md` | v4.6.0, con binario del motor v0.1.15 en `scripts/bin/linux-x64/` |
+| Figma (plugin OpenCode) | global (`opencode plugin add`) | Plugin oficial; OAuth propio, ver §17.3 |
+| Lockfile de skills | `skills-lock.json` | Metadatos (fuente + hash) para reinstalar; se versiona |
+
+### 17.2 Comandos de reinstalación
+
+Todo se instala desde la raíz del proyecto. La CLI de skills detecta el proyecto y usa alcance local por defecto.
+
+```bash
+# Skills (verificar nombres con --list antes de instalar)
+npx skills add vercel-labs/skills --skill find-skills --agent opencode -y
+for s in emil-design-eng review-animations animation-performance break-ui pick-ui-library; do
+  npx skills add emilkowalski/skills --skill "$s" --agent opencode -y
+done
+for s in minimalist-ui full-output-enforcement; do
+  npx skills add https://github.com/Leonxlnx/taste-skill --skill "$s" --agent opencode -y
+done
+
+# Impeccable (proceso/QA de diseño). NO ejecutar /impeccable init sin autorización de la Gerente.
+npx impeccable install --providers=opencode --scope=project
+npx impeccable telemetry off        # configurado en ~/.impeccable/config.json
+
+# Plugin oficial de Figma para OpenCode (requiere opencode >= 2.0.29)
+opencode plugin add 'git+https://github.com/anomalyco/opencode.git#path:packages/plugins/figma'
+```
+
+Restaurar solo desde el lockfile: `npx skills experimental_install`. Actualizar: `npx skills update`.
+
+### 17.3 Reglas de uso
+
+1. **El SRS/SDD manda sobre cualquier skill.** UI en español neutro; fechas `DD/MM/YYYY HH:mm:ss`; modo oscuro/claro; stack React + Vite + Tailwind + shadcn/ui + Recharts; Zod + React Hook Form; estados verde (normal) / amarillo (inestable) / rojo parpadeante (Kill-switch activo); acciones críticas (login, Modo Autónomo, Kill-switch) a máximo 2 toques; responsive. Si una skill contradice un requisito, gana el requisito.
+2. **Una sola dirección visual a la vez.** `minimalist-ui` para dirección de estilo + `impeccable` para proceso/QA. No cargar otras skills de dirección de arte (en particular ninguna del repo `taste-skill` fuera de las dos instaladas).
+3. **Movimiento mínimo y funcional.** El Kill-Switch y sus estados nunca llevan animaciones que retrasen la acción u oculten el estado. `review-animations` y `animation-performance` son para revisar, no para añadir motion decorativo.
+4. **`break-ui` con datos extremos:** ejecutarla sobre cada pantalla antes de darla por terminada (historial vacío, números largos, predicción nula, API caída, textos no latinos).
+5. **`pick-ui-library`:** solo antes de añadir cualquier librería de UI. Por defecto la respuesta es shadcn/ui.
+6. **`full-output-enforcement`:** solo si la salida generada se corta.
+7. **`find-skills`:** solo si la Gerente o el líder la pide explícitamente.
+8. **Figma:** el login (OAuth) lo hace la persona usuaria en su sesión; no se guardan `client_id`/`client_secret` ni URLs de endpoint a mano — el plugin los resuelve. No commitear tokens.
+9. **Figma en modo solo lectura por defecto.** El plan puede tener cupo bajo de llamadas, así que:
+   - Para **implementar diseños** se usa la vía de lectura: skill `figma-design-to-code` + `get_design_context` (y `get_screenshot`/`get_metadata` si hace falta). Cargar la skill **antes** de la herramienta: es requisito previo obligatorio.
+   - **NO ejecutar** `use_figma`, `create_new_file`, `generate_figma_design`, `send_code_to_figma`, `html_to_figma`, `upload_assets`, `export_video`, `generate_image`, ni ninguna herramienta que **escriba** en Figma, salvo petición explícita de la Gerente o el líder **en el mismo mensaje**.
+   - Antes de invocar **cualquier** herramienta de Figma, informar en el chat cuántas llamadas se harían y para qué, y esperar visto bueno.
+   - No usar herramientas `weave_*` ni de shaders/plugins generativos: quedan fuera del alcance de la Fase B.
