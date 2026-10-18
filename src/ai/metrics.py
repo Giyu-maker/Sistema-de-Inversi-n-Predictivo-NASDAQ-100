@@ -211,6 +211,54 @@ def pesos_de_clase(y_train: np.ndarray, n_clases: int = N_CLASES) -> np.ndarray:
     return pesos / pesos.mean()
 
 
+def corregir_posterior(probs: np.ndarray, pesos: np.ndarray) -> np.ndarray:
+    """Deshace la reponderación de clases para devolver el posterior **real**.
+
+    El modelo se entrena con entropía cruzada ponderada por frecuencia inversa
+    ``w_c``. Eso no cambia a qué clase apunta la red, sino a qué escala: la
+    softmax converge a
+
+        q(c|x) ∝ w_c · p(c|x)
+
+    con ``p`` el posterior que habría sin reponderar. Para exponer la
+    probabilidad real basta deshacer el factor y renormalizar:
+
+        p(c|x) ∝ q(c|x) / w_c
+
+    **Sin parámetros.** No hay temperatura ni nada que ajustar: no se tocó nada
+    contra val ni contra test. Con ``w = 1`` la función es la identidad, así que
+    un modelo entrenado sin pesos no se altera.
+
+    La confianza que se expone al usuario (RF-304) es **este** posterior
+    corregido, no la softmax cruda. Las dos dicen cosas distintas: la cruda
+    mide cuánto crece la red dado que la clase sobre-representada fue la que se
+    muestreó con más peso; la corregida es la probabilidad bajo la distribución
+    real de clases, que es la que usa el `RiskManager`.
+
+    Acepta ``(C,)`` o ``(..., C)`` y conserva la forma.
+    """
+    probs = np.asarray(probs, dtype=np.float64)
+    pesos = np.asarray(pesos, dtype=np.float64)
+
+    if pesos.ndim != 1:
+        raise ValueError(f"los pesos de clase deben ser un vector, no forma {pesos.shape}")
+    if not np.isfinite(pesos).all() or (pesos <= 0).any():
+        raise ValueError(f"los pesos de clase deben ser finitos y positivos: {pesos.tolist()}")
+    if probs.shape[-1] != len(pesos):
+        raise ValueError(
+            f"la última dimensión de probs ({probs.shape[-1]}) no coincide con el "
+            f"número de pesos ({len(pesos)})"
+        )
+    if probs.size == 0:
+        return probs.astype(np.float32)
+
+    corregido = probs / pesos
+    total = corregido.sum(axis=-1, keepdims=True)
+    if not np.isfinite(total).all() or (total <= 0).any():
+        raise ValueError("la corrección de prior produjo probabilidades no normalizables")
+    return (corregido / total).astype(np.float32)
+
+
 # ---------------------------------------------------------------------------
 # Bootstrap por bloques de sesión
 # ---------------------------------------------------------------------------
@@ -327,6 +375,39 @@ def calibracion(y_true: np.ndarray, y_pred: np.ndarray, confianzas: np.ndarray, 
     return filas
 
 
+def calibracion_por_clase(y_true: np.ndarray, y_pred: np.ndarray, confianzas: np.ndarray, *,
+                          n_clases: int = N_CLASES) -> list[dict]:
+    """Precisión y confianza media **por clase predicha** (plan §5).
+
+    La calibración agregada puede esconder un sesgo: si el modelo está
+    sobrediagnosticado en `UP` y sobrediagnosticado a la baja en `STABLE`, el
+    promedio puede salir razonable. Separarlo por clase expone de qué lado está
+    el error, que es lo que le importa al `RiskManager` antes de abrir posición.
+    """
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    confianzas = np.asarray(confianzas, dtype=float)
+    filas: list[dict] = []
+    for clase in range(n_clases):
+        mascara = y_pred == clase
+        n = int(mascara.sum())
+        if n == 0:
+            filas.append({"clase": LABEL_NAMES[clase], "n": 0,
+                          "confianza_media": None, "precision_observada": None,
+                          "brecha": None})
+            continue
+        confianza_media = float(confianzas[mascara].mean())
+        precision = float((y_true[mascara] == clase).mean())
+        filas.append({
+            "clase": LABEL_NAMES[clase],
+            "n": n,
+            "confianza_media": confianza_media,
+            "precision_observada": precision,
+            "brecha": precision - confianza_media,
+        })
+    return filas
+
+
 def tabla_umbrales(y_true: np.ndarray, y_pred: np.ndarray, confianzas: np.ndarray, *,
                    umbrales: Sequence[float] | None = None) -> list[dict]:
     """Qué pasa en test al imponer cada umbral de perfil de riesgo (plan §5).
@@ -365,6 +446,73 @@ def tabla_umbrales(y_true: np.ndarray, y_pred: np.ndarray, confianzas: np.ndarra
                 fila["precision_down"] = float((y_true[down] == LABEL_DOWN).mean())
         filas.append(fila)
     return filas
+
+
+# ---------------------------------------------------------------------------
+# Acierto direccional
+# ---------------------------------------------------------------------------
+
+def acierto_direccional(y_true: np.ndarray, y_pred: np.ndarray, sesiones: np.ndarray, *,
+                        n_replicas: int = N_REPLICAS, semilla: int = 20261017,
+                        n_clases: int = N_CLASES) -> dict:
+    """Acierto **solo donde hay una decisión que acertar**, con su intervalo.
+
+    Se miran únicamente las muestras en las que **tanto la verdad como la
+    predicción son `UP` o `DOWN`**. Las `STABLE` se descartan de los dos lados:
+    si el modelo dice "no pasa nada" y no pasó nada, eso no acredita que sepa
+    hacia dónde se va el mercado, solo que no se movió. Contarlo como acierto
+    direccional inflaría el resultado con casos que no son de dirección.
+
+    El intervalo se estima con el **mismo bootstrap por bloques de sesión**
+    pre-registrado en el plan §4: las ventanas solapan 11 de sus 12 velas y un
+    intervalo binomial i.i.d. quedaría demasiado estrecho.
+    """
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    if y_true.shape != y_pred.shape:
+        raise ValueError("y_true e y_pred deben tener la misma forma")
+    if y_true.shape != sesiones.shape:
+        raise ValueError("sesiones debe alinearse con y_true")
+
+    direccional = np.isin(y_true, (LABEL_DOWN, LABEL_UP)) & \
+        np.isin(y_pred, (LABEL_DOWN, LABEL_UP))
+    n = int(direccional.sum())
+    casos_verdad = int(np.isin(y_true, (LABEL_DOWN, LABEL_UP)).sum())
+    if n == 0:
+        return {"n": 0, "aciertos": 0, "ratio": None, "ic_95": None,
+                "casos_direccionales_verdad": casos_verdad,
+                "n_clases_direccionales": n_clases}
+
+    aciertos = int((direccional & (y_true == y_pred)).sum())
+
+    bloques = _indice_de_bloques(sesiones)
+    unicas = np.array(sorted(bloques), dtype=np.int64)
+    rng = np.random.RandomState(semilla)
+    valores: list[float] = []
+    for _ in range(n_replicas):
+        elegidas = rng.choice(unicas, size=len(unicas), replace=True)
+        idx = np.concatenate([bloques[int(s)] for s in elegidas])
+        mascara = direccional[idx]
+        k = int(mascara.sum())
+        if k == 0:
+            continue  # réplica sin casos direccionales: no aporta información
+        valores.append(float((y_true[idx][mascara] == y_pred[idx][mascara]).mean()))
+
+    if valores:
+        inferior, superior = np.percentile(np.asarray(valores), PERCENTILES)
+        intervalo: tuple[float, float] | None = (float(inferior), float(superior))
+    else:
+        intervalo = None
+
+    return {
+        "n": n,
+        "aciertos": aciertos,
+        "ratio": aciertos / n,
+        "ic_95": list(intervalo) if intervalo else None,
+        # Solo la verdad direccional: es contra eso que se mira la cobertura.
+        "casos_direccionales_verdad": casos_verdad,
+        "n_clases_direccionales": n_clases,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -19,9 +19,16 @@ import numpy as np
 import pytest
 import torch
 
-from src.ai.features import FEATURE_NAMES, FEATURE_SCHEMA_VERSION, HORIZON, WINDOW
+from src.ai.features import (
+    FEATURE_NAMES,
+    FEATURE_SCHEMA_VERSION,
+    HORIZON,
+    LABEL_NAMES,
+    WINDOW,
+)
 from src.ai.model import (
     ARTIFACT_FORMAT_VERSION,
+    DEFAULT_LINEAR_CONFIG,
     DEFAULT_MODEL_CONFIG,
     LocalPredictiveModel,
     NasdaqLinear,
@@ -45,6 +52,12 @@ from src.ai.xai import (
 N_FEATURES = len(FEATURE_NAMES)
 SEED = 20261017
 
+#: Pesos de clase con los que se construyen los artefactos de prueba. Valen 1,
+#: que es la identidad, para que los tests que no estudian la corrección no se
+#: vean alterados por ella. La corrección propiamente se prueba aparte, con
+#: pesos reales.
+PESOS = np.ones(len(LABEL_NAMES), dtype=np.float64)
+
 
 def _stats(desvio: float = 1.0, media: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
     return (np.full(N_FEATURES, media, dtype=np.float32),
@@ -62,8 +75,27 @@ def _artefacto(model_config: dict[str, Any] | None = None, **kwargs: Any) -> dic
         stats_std=desvio,
         stable_band_pct=0.10,
         trained_at_ms=1791316500000,
+        # Por defecto pesos unitarios, que es la identidad: los tests que no
+        # estudian la corrección no deben verse afectados por ella.
+        class_weights=kwargs.pop("class_weights", PESOS),
         training_device="cpu",
     )
+
+
+#: Los pesos que dio el entrenamiento real sobre el dataset completo.
+PESOS_REALES = np.array([1.311, 0.397, 1.292], dtype=np.float64)
+
+
+@pytest.fixture()
+def modelo_ponderado(tmp_path: Path) -> LocalPredictiveModel:
+    """Misma red que `modelo`, pero con los pesos de clase del entrenamiento real.
+
+    `torch.manual_seed(SEED)` dentro de `_artefacto` garantiza que los pesos de
+    la red sean idénticos: así la única diferencia entre los dos modelos es la
+    corrección de prior.
+    """
+    ruta = save_artifact(_artefacto(class_weights=PESOS_REALES), tmp_path / "ponderado.pt")
+    return LocalPredictiveModel(str(ruta))
 
 
 @pytest.fixture()
@@ -119,6 +151,17 @@ class TestArquitectura:
         with pytest.raises(ValueError):
             make_model("transformer", {})
 
+    def test_config_lineal_solo_trae_lo_que_el_lineal_acepta(self) -> None:
+        """`make_model` hace `NasdaqLinear(**config)`: un `hidden` extra reventaría.
+
+        La corrección que hace `arquitectura_activa` de `linear` a `mlp` es
+        cambiar de artefacto, no de código; para que eso funcione cada
+        arquitectura debe llevar la configuración que su constructor acepta.
+        """
+        assert DEFAULT_LINEAR_CONFIG == {"input_dim": WINDOW * N_FEATURES, "n_classes": 3}
+        lineal = make_model("linear", dict(DEFAULT_LINEAR_CONFIG))
+        assert sum(p.numel() for p in lineal.parameters()) == (WINDOW * N_FEATURES + 1) * 3
+
 
 # ---------------------------------------------------------------------------
 # Artefacto
@@ -144,7 +187,7 @@ class TestArtefacto:
             NasdaqMLP(), model_type="mlp", model_config=dict(DEFAULT_MODEL_CONFIG),
             stats_mean=np.zeros(N_FEATURES, np.float32),
             stats_std=np.ones(N_FEATURES, np.float32),
-            stable_band_pct=0.10, trained_at_ms=0, training_device="cpu",
+            stable_band_pct=0.10, trained_at_ms=0, training_device="cpu", class_weights=PESOS,
             metrics={"macro_f1": np.float32(0.5), "n": np.int64(3),
                      "por_tramo": {"[0.8,1.0)": {"n": np.int64(7)}}},
         )
@@ -159,7 +202,7 @@ class TestArtefacto:
         artefacto = build_artifact(
             NasdaqMLP(), model_type="mlp", model_config=dict(DEFAULT_MODEL_CONFIG),
             stats_mean=media, stats_std=desvio, stable_band_pct=0.10,
-            trained_at_ms=0, training_device="cpu",
+            trained_at_ms=0, training_device="cpu", class_weights=PESOS,
         )
         cargado = load_artifact(save_artifact(artefacto, tmp_path / "m.pt"))
         assert cargado["stats_mean"] == pytest.approx([1.5] * N_FEATURES)
@@ -174,7 +217,7 @@ class TestArtefacto:
             original, model_type="mlp", model_config=dict(DEFAULT_MODEL_CONFIG),
             stats_mean=np.zeros(N_FEATURES, np.float32),
             stats_std=np.ones(N_FEATURES, np.float32),
-            stable_band_pct=0.10, trained_at_ms=0, training_device="cpu",
+            stable_band_pct=0.10, trained_at_ms=0, training_device="cpu", class_weights=PESOS,
         )
         ruta = save_artifact(artefacto, tmp_path / "m.pt")
         reconstruido = make_model("mlp", dict(load_artifact(ruta)["model_config"]))
@@ -193,7 +236,7 @@ class TestArtefacto:
                 NasdaqMLP(), model_type="mlp", model_config=dict(DEFAULT_MODEL_CONFIG),
                 stats_mean=np.zeros(N_FEATURES, np.float32),
                 stats_std=np.ones(N_FEATURES - 1, np.float32),
-                stable_band_pct=0.1, trained_at_ms=0, training_device="cpu",
+                stable_band_pct=0.1, trained_at_ms=0, training_device="cpu", class_weights=PESOS,
             )
 
     def test_rechaza_estadisticos_nan(self) -> None:
@@ -203,7 +246,7 @@ class TestArtefacto:
             build_artifact(
                 NasdaqMLP(), model_type="mlp", model_config=dict(DEFAULT_MODEL_CONFIG),
                 stats_mean=media, stats_std=desvio,
-                stable_band_pct=0.1, trained_at_ms=0, training_device="cpu",
+                stable_band_pct=0.1, trained_at_ms=0, training_device="cpu", class_weights=PESOS,
             )
 
     def test_rechaza_desviacion_cero(self) -> None:
@@ -214,7 +257,7 @@ class TestArtefacto:
             build_artifact(
                 NasdaqMLP(), model_type="mlp", model_config=dict(DEFAULT_MODEL_CONFIG),
                 stats_mean=media, stats_std=desvio,
-                stable_band_pct=0.1, trained_at_ms=0, training_device="cpu",
+                stable_band_pct=0.1, trained_at_ms=0, training_device="cpu", class_weights=PESOS,
             )
 
     def test_rechaza_model_type_desconocido(self) -> None:
@@ -223,7 +266,7 @@ class TestArtefacto:
             build_artifact(
                 NasdaqMLP(), model_type="transformer", model_config=dict(DEFAULT_MODEL_CONFIG),
                 stats_mean=media, stats_std=desvio,
-                stable_band_pct=0.1, trained_at_ms=0, training_device="cpu",
+                stable_band_pct=0.1, trained_at_ms=0, training_device="cpu", class_weights=PESOS,
             )
 
     def test_es_portable_entre_cpu_y_gpu(self, tmp_path: Path) -> None:
@@ -236,6 +279,45 @@ class TestArtefacto:
         ruta = save_artifact(_artefacto(), tmp_path / "m.pt")
         for device in ("cpu", torch.device("cpu")):
             assert load_artifact(ruta, map_location=device)["feature_names"] == list(FEATURE_NAMES)
+
+    def test_los_pesos_de_clase_viajan_y_sobreviven(self, tmp_path: Path) -> None:
+        artefacto = _artefacto(class_weights=PESOS_REALES)
+        cargado = load_artifact(save_artifact(artefacto, tmp_path / "m.pt"))
+        assert cargado["class_weights"] == pytest.approx(PESOS_REALES.tolist())
+        assert all(isinstance(v, float) for v in cargado["class_weights"])
+
+    def test_rechaza_un_vector_de_pesos_incompleto(self) -> None:
+        media, desvio = _stats()
+        with pytest.raises(ValueError, match="3 elementos"):
+            build_artifact(
+                NasdaqMLP(), model_type="mlp", model_config=dict(DEFAULT_MODEL_CONFIG),
+                stats_mean=media, stats_std=desvio, stable_band_pct=0.1,
+                trained_at_ms=0, training_device="cpu",
+                class_weights=np.array([1.0, 1.0]),
+            )
+
+    def test_rechaza_pesos_no_positivos(self) -> None:
+        media, desvio = _stats()
+        with pytest.raises(ValueError, match="positivos"):
+            build_artifact(
+                NasdaqMLP(), model_type="mlp", model_config=dict(DEFAULT_MODEL_CONFIG),
+                stats_mean=media, stats_std=desvio, stable_band_pct=0.1,
+                trained_at_ms=0, training_device="cpu",
+                class_weights=np.array([1.0, 0.0, 1.0]),
+            )
+
+    def test_un_artefacto_herido_sin_pesos_no_se_puede_inferir(self, tmp_path: Path) -> None:
+        """Preferible que falle ruidosamente a servir una probabilidad que mide otra cosa.
+
+        Un artefacto sin pesos no sabe con qué pérdida se entrenó, y exponer la
+        softmax cruda como si fuera la confianza sería entregar al RiskManager
+        un número que no dice lo que dice.
+        """
+        artefacto = _artefacto()
+        artefacto.pop("class_weights")
+        ruta = save_artifact(artefacto, tmp_path / "herido.pt")
+        with pytest.raises(ValueError, match="class_weights"):
+            LocalPredictiveModel(str(ruta))
 
 
 class TestVersionDeEsquema:
@@ -297,9 +379,31 @@ class TestRunInference:
         assert (probs >= 0).all()
 
     def test_la_confianza_es_la_proba_de_la_clase_ganadora(self, modelo: LocalPredictiveModel, ventana: np.ndarray) -> None:
+        # Con pesos unitarios la corrección es la identidad, así que aquí sí
+        # coincide con la softmax. Lo importante está en el test de abajo.
         probs = modelo.predict_proba(ventana)[0]
         _, confianza, _ = modelo.run_inference(ventana)
         assert confianza == pytest.approx(float(probs.max()), abs=1e-6)
+
+    def test_la_decision_no_depende_de_los_pesos_pero_la_confianza_si(
+            self, modelo_ponderado, modelo: LocalPredictiveModel, ventana: np.ndarray) -> None:
+        """El contrato completo: qué decide la red y qué número se expone.
+
+        `modelo_ponderado` y `modelo` cargan **los mismos pesos de la red**;
+        solo difieren en los pesos de clase. Por eso:
+        - la tendencia (argmax de la softmax) sale idéntica: los pesos no
+          tocan la decisión;
+        - la confianza cambia: es el posterior corregido de esa clase.
+        Si la primera fallara, se estaría mezclando la corrección con la
+        decisión; si la segunda, la corrección no se aplicaría.
+        """
+        tendencia_ponderada, conf_ponderada, _ = modelo_ponderado.run_inference(ventana)
+        tendencia_unitaria, conf_unitaria, _ = modelo.run_inference(ventana)
+        assert tendencia_ponderada == tendencia_unitaria
+        assert not np.isclose(conf_ponderada, conf_unitaria, atol=1e-4)
+        # La de pesos unitarios es, por definición, la softmax cruda.
+        assert conf_unitaria == pytest.approx(
+            float(modelo.predict_proba(ventana)[0].max()), abs=1e-6)
 
     def test_no_modifica_el_tensor_que_recibe(self, modelo: LocalPredictiveModel, ventana: np.ndarray) -> None:
         original = ventana.copy()
@@ -320,7 +424,7 @@ class TestNormalizacion:
         artefacto = build_artifact(
             NasdaqMLP(), model_type="mlp", model_config=dict(DEFAULT_MODEL_CONFIG),
             stats_mean=media, stats_std=desvio, stable_band_pct=0.10,
-            trained_at_ms=0, training_device="cpu",
+            trained_at_ms=0, training_device="cpu", class_weights=PESOS,
         )
         instancia = LocalPredictiveModel(str(save_artifact(artefacto, tmp_path / "m.pt")))
         entrada = np.random.RandomState(SEED).randn(WINDOW, N_FEATURES).astype(np.float32)
@@ -338,7 +442,7 @@ class TestNormalizacion:
             artefacto = build_artifact(
                 NasdaqMLP(), model_type="mlp", model_config=dict(DEFAULT_MODEL_CONFIG),
                 stats_mean=media, stats_std=desvio, stable_band_pct=0.10,
-                trained_at_ms=0, training_device="cpu",
+                trained_at_ms=0, training_device="cpu", class_weights=PESOS,
             )
             rutas.append(save_artifact(artefacto, tmp_path / f"m{i}.pt"))
         x = np.full((WINDOW, N_FEATURES), 50.0, dtype=np.float32)

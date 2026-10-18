@@ -27,7 +27,7 @@ inversa.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 import torch
@@ -40,6 +40,7 @@ from src.ai.features import (
     LABEL_NAMES,
     WINDOW,
 )
+from src.ai.metrics import corregir_posterior
 
 #: Versión del contenedor del artefacto (formato del archivo, no de las features).
 ARTIFACT_FORMAT_VERSION = 1
@@ -50,6 +51,14 @@ DEFAULT_MODEL_CONFIG: dict[str, int | float] = {
     "hidden2": 32,
     "n_classes": len(LABEL_NAMES),
     "dropout": 0.20,
+}
+
+#: Config del baseline lineal: misma entrada, mismas salidas, sin capas ocultas.
+#: Existe para medir si la no linealidad aporta algo; no es un candidato a
+#: despliegue por sí mismo (SRS §5.3 exige una red neuronal).
+DEFAULT_LINEAR_CONFIG: dict[str, int] = {
+    "input_dim": WINDOW * len(FEATURE_NAMES),  # 120
+    "n_classes": len(LABEL_NAMES),
 }
 
 
@@ -131,6 +140,7 @@ def build_artifact(
     *,
     model_type: str,
     model_config: dict[str, Any],
+    class_weights: Sequence[float],
     stats_mean: np.ndarray,
     stats_std: np.ndarray,
     stable_band_pct: float,
@@ -142,6 +152,11 @@ def build_artifact(
 
     Todo lo que necesita inferencia viaja aquí. **Ningún estadístico se
     recalcula al servir**: media y desviación son las del train y punto.
+
+    `class_weights` es **obligatorio**: son los pesos de clase con los que se
+    entrenó, y sin ellos no se puede deshacer la reponderación ni exponer la
+    confianza correcta. Preferible que falle aquí a que el servicio sirva una
+    probabilidad que mide otra cosa.
     """
     if stats_mean.shape != stats_std.shape:
         raise ValueError("stats_mean y stats_std deben tener la misma forma")
@@ -156,6 +171,15 @@ def build_artifact(
     if model_type not in ("mlp", "linear"):
         raise ValueError(f"model_type desconocido: {model_type!r}")
 
+    n_clases = int(DEFAULT_MODEL_CONFIG["n_classes"])
+    pesos = np.asarray(class_weights, dtype=np.float64)
+    if pesos.shape != (n_clases,):
+        raise ValueError(
+            f"class_weights debe tener {n_clases} elementos, no {pesos.shape}"
+        )
+    if not np.isfinite(pesos).all() or (pesos <= 0).any():
+        raise ValueError(f"class_weights debe ser finitos y positivos: {pesos.tolist()}")
+
     return {
         "artifact_format": ARTIFACT_FORMAT_VERSION,
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
@@ -167,6 +191,9 @@ def build_artifact(
         "horizon": HORIZON,
         "stable_band_pct": float(stable_band_pct),
         "label_names": {int(k): v for k, v in LABEL_NAMES.items()},
+        # Pesos de la pérdida con la que se entrenó. Viajan para poder deshacer
+        # la reponderación en la inferencia y exponer el posterior real.
+        "class_weights": [float(v) for v in pesos],
         "stats_mean": [float(v) for v in stats_mean],
         "stats_std": [float(v) for v in stats_std],
         "trained_at_ms": int(trained_at_ms),
@@ -249,6 +276,15 @@ class LocalPredictiveModel:
         self.stats_mean = np.asarray(self.artifact["stats_mean"], dtype=np.float32)
         self.stats_std = np.asarray(self.artifact["stats_std"], dtype=np.float32)
         self.label_names: dict[int, str] = {int(k): v for k, v in self.artifact["label_names"].items()}
+        # Pesos con los que se entrenó: sin ellos no hay corrección de prior y
+        # la confianza sería la softmax cruda, que no es lo que expone RF-304.
+        if "class_weights" not in self.artifact:
+            raise ValueError(
+                "el artefacto no trae `class_weights`: no se puede deshacer la "
+                "reponderación de la pérdida ni exponer la confianza correcta. "
+                "Reentrenar con la versión actual del código."
+            )
+        self.class_weights = np.asarray(self.artifact["class_weights"], dtype=np.float64)
 
     def load_model(self, path: str) -> nn.Module:
         """Carga los pesos de la red neuronal directamente en la GPU local.
@@ -308,12 +344,30 @@ class LocalPredictiveModel:
         tensor = torch.from_numpy(np.ascontiguousarray(aplanado, dtype=np.float32))
         return tensor.to(self.device)
 
+    def _posterior_corregido(self, probs_crudas: np.ndarray) -> np.ndarray:
+        """Deshace la reponderación de la pérdida para exponer el posterior real.
+
+        Ver `src.ai.metrics.corregir_posterior`. Sin parámetros: solo depende de
+        los pesos que viajan en el artefacto.
+        """
+        return corregir_posterior(probs_crudas, self.class_weights)
+
     def run_inference(self, feature_tensor: torch.Tensor) -> tuple[str, float, str]:
         """
         Ejecuta la predicción y retorna:
         (trend_prediction: 'UP'|'DOWN'|'STABLE', confidence_score, rationale_text)
 
-        La confianza (RF-304) es la probabilidad softmax de la clase ganadora.
+        **Qué es cada cosa, sin ambigüedad:**
+
+        - `trend_prediction` es el `argmax` de la softmax de la red: la decisión
+          del modelo, igual que la que se evaluó en las métricas.
+        - `confidence_score` (RF-304) es el **posterior corregido por prior** de
+          esa misma clase, no la softmax cruda. La red se entrenó con pérdida
+          ponderada por frecuencia inversa, así que su softmax mide el posterior
+          bajo los pesos del entrenamiento; dividir por `w_c` y renormalizar
+          devuelve el posterior bajo la distribución real de clases, que es el
+          que sirve para decidir. Sin parámetros y sin haber ajustado nada.
+
         **Este método no decide nada sobre el umbral**: el corte al 75 % y los
         perfiles de riesgo son responsabilidad del `RiskManager` en el Sprint 4.
         """
@@ -321,15 +375,16 @@ class LocalPredictiveModel:
 
         x = self._prepare(feature_tensor)
         with torch.no_grad():
-            logits = self.model(x)
-            probs = torch.softmax(logits, dim=-1)
-        indice = int(probs[0].argmax().item())
-        confianza = float(probs[0, indice].item())
+            crudas = torch.softmax(self.model(x), dim=-1).cpu().numpy()
+
+        indice = int(crudas[0].argmax())
+        probs = self._posterior_corregido(crudas)
+        confianza = float(probs[0, indice])
 
         atribucion = gradient_x_input(self.model, x, indice)[0]
         rationale = build_rationale(
             atribucion=atribucion,
-            probabilities=probs[0].detach().cpu().numpy(),
+            probabilities=probs[0],
             predicted_index=indice,
             feature_names=self.feature_names,
             label_names=self.label_names,
@@ -337,11 +392,17 @@ class LocalPredictiveModel:
         return self.label_names[indice], confianza, rationale
 
     def predict_proba(self, feature_tensor: torch.Tensor | np.ndarray) -> np.ndarray:
-        """Probabilidad de las tres clases, en orden DOWN/STABLE/UP.
+        """Posterior **corregido** de las tres clases, en orden DOWN/STABLE/UP.
 
         No está en el SDD, pero la calibración (plan §5) y el `RiskManager` del
         Sprint 4 necesitan ver las tres, no solo la ganadora.
+
+        Devuelve la corrección, no la softmax cruda: es la probabilidad bajo la
+        distribución real de clases y por lo tanto la que corresponde usar para
+        decidir. `run_inference` decide con la softmax cruda y reporta la
+        confianza de esta.
         """
         x = self._prepare(feature_tensor)
         with torch.no_grad():
-            return torch.softmax(self.model(x), dim=-1).cpu().numpy()
+            crudas = torch.softmax(self.model(x), dim=-1).cpu().numpy()
+        return self._posterior_corregido(crudas)

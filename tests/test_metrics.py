@@ -22,13 +22,16 @@ from src.ai.metrics import (
     UMBRALES_PERFIL,
     Metricas,
     accuracy,
+    acierto_direccional,
     baseline_azar_por_priors,
     baseline_mayoritario,
     baseline_persistencia,
     bootstrap_bloques,
     bootstrap_pareado,
     calibracion,
+    calibracion_por_clase,
     confusion_matrix,
+    corregir_posterior,
     f1_por_clase,
     hay_ventaja_demostrada,
     macro_f1,
@@ -520,3 +523,182 @@ class TestTercios:
     def test_rechaza_entradas_vacias(self) -> None:
         with pytest.raises(ValueError):
             metricas_por_tercios(np.array([], int), np.array([], int))
+
+
+# ---------------------------------------------------------------------------
+# Corrección de prior — la confianza que se expone al usuario (RF-304)
+# ---------------------------------------------------------------------------
+
+class TestCorregirPosterior:
+    def test_con_pesos_unitarios_es_la_identidad(self) -> None:
+        probs = np.array([[0.6, 0.3, 0.1], [0.2, 0.5, 0.3]], dtype=np.float32)
+        assert np.allclose(corregir_posterior(probs, np.ones(3)), probs, atol=1e-7)
+
+    def test_aplica_la_formula_verificada_a_mano(self) -> None:
+        # p ∝ q / w, renormalizada:  [0.40, 0.35, 0.25] / [2, 1, 1] = [0.2, 0.35, 0.25]
+        probs = np.array([0.40, 0.35, 0.25])
+        esperado = np.array([0.2, 0.35, 0.25]) / 0.80
+        assert np.allclose(corregir_posterior(probs, np.array([2.0, 1.0, 1.0])),
+                           esperado, atol=1e-6)
+
+    def test_las_filas_siguen_normalizadas(self) -> None:
+        probs = np.array([[0.4, 0.3, 0.3], [0.1, 0.1, 0.8]])
+        corregido = corregir_posterior(probs, np.array([1.3, 0.4, 1.3]))
+        assert np.allclose(corregido.sum(axis=1), 1.0, atol=1e-6)
+        assert (corregido > 0).all()
+
+    def test_puede_cambiar_la_clase_mas_probable(self) -> None:
+        """La corrección no es un simple reescalado: puede mover el argmax."""
+        probs = np.array([0.40, 0.39, 0.21])
+        pesos = np.array([2.0, 1.0, 1.0])
+        assert probs.argmax() == 0
+        assert corregir_posterior(probs, pesos).argmax() == 1
+
+    def test_la_confianza_reportada_puede_bajar_de_un_tercio(self) -> None:
+        """El piso de 1/3 vale para la softmax cruda, no para lo que se expone.
+
+        La corrección **sí** garantiza que `max(posterior corregido) ≥ 1/3`,
+        como cualquier distribución de 3 clases. Pero lo que se reporta es el
+        valor de la clase que **ganó la softmax**, que no es necesariamente la
+        más probable tras corregir; en ese caso puede quedar por debajo del
+        azar uniforme. Es correcto: los pesos existen precisamente para
+        contrarrestar que esa clase se sobre-representa durante el
+        entrenamiento.
+        """
+        probs = np.array([0.34, 0.33, 0.33])
+        pesos = np.array([1.05, 0.94, 1.01])
+        corregido = corregir_posterior(probs, pesos)
+        indice_ganador = int(probs.argmax())          # quién decide la red
+        assert corregido.max() >= 1 / 3               # sí, siempre
+        assert corregido[indice_ganador] < 1 / 3      # pero el reportado, no
+
+    def test_conserva_la_forma_de_un_vector(self) -> None:
+        assert corregir_posterior(np.array([0.2, 0.3, 0.5]), np.ones(3)).shape == (3,)
+
+    def test_un_vector_vacio_devuelve_vacio(self) -> None:
+        vacio = np.zeros((0, 3), dtype=np.float32)
+        assert corregir_posterior(vacio, np.ones(3)).shape == (0, 3)
+
+    def test_rechaza_pesos_no_positivos(self) -> None:
+        with pytest.raises(ValueError, match="positivos"):
+            corregir_posterior(np.array([0.2, 0.3, 0.5]), np.array([1.0, 0.0, 1.0]))
+
+    def test_rechaza_una_matriz_de_pesos(self) -> None:
+        with pytest.raises(ValueError, match="vector"):
+            corregir_posterior(np.array([0.2, 0.3, 0.5]), np.ones((1, 3)))
+
+    def test_rechaza_una_dimension_incompatible(self) -> None:
+        with pytest.raises(ValueError, match="última dimensión"):
+            corregir_posterior(np.array([0.2, 0.3, 0.5]), np.ones(4))
+
+
+# ---------------------------------------------------------------------------
+# Acierto direccional
+# ---------------------------------------------------------------------------
+
+class TestAciertoDireccional:
+    def test_un_modelo_perfecto_acierta_todo_lo_direccional(self) -> None:
+        y = np.array([LABEL_DOWN, LABEL_STABLE, LABEL_UP, LABEL_UP])
+        r = acierto_direccional(y, y.copy(), np.zeros(4, dtype=int), n_replicas=200)
+        assert r["n"] == 3                      # el STABLE queda fuera
+        assert r["aciertos"] == 3
+        assert r["ratio"] == pytest.approx(1.0)
+        assert r["casos_direccionales_verdad"] == 3
+        inferior, superior = r["ic_95"]
+        assert inferior == pytest.approx(1.0) and superior == pytest.approx(1.0)
+
+    def test_stable_no_cuenta_ni_como_verdad_ni_como_prediccion(self) -> None:
+        y_true = np.array([LABEL_DOWN, LABEL_DOWN, LABEL_STABLE, LABEL_UP])
+        y_pred = np.array([LABEL_STABLE, LABEL_DOWN, LABEL_STABLE, LABEL_STABLE])
+        r = acierto_direccional(y_true, y_pred, np.zeros(4, dtype=int), n_replicas=200)
+        # Solo DOWN→DOWN sobrevive: DOWN→STABLE se cae por la predicción,
+        # STABLE→STABLE por la verdad y UP→STABLE por la predicción.
+        assert r["n"] == 1
+        assert r["aciertos"] == 1
+        assert r["casos_direccionales_verdad"] == 3
+
+    def test_cuenta_la_direccion_no_la_clase(self) -> None:
+        # DOWN real y UP predicho es dirección, pero equivocada.
+        y = np.array([LABEL_DOWN, LABEL_UP, LABEL_UP, LABEL_DOWN])
+        p = np.array([LABEL_UP] * 4)
+        r = acierto_direccional(y, p, np.zeros(4, dtype=int), n_replicas=200)
+        assert r["n"] == 4 and r["aciertos"] == 2
+        assert r["ratio"] == pytest.approx(0.5)
+
+    def test_un_resultado_al_azar_no_es_ventaja(self) -> None:
+        """Al 50 % el intervalo contiene el 0,5: no se declara acierto."""
+        rng = np.random.RandomState(SEMILLA)
+        y = np.tile([LABEL_DOWN, LABEL_UP], 200)
+        p = rng.choice([LABEL_DOWN, LABEL_UP], size=len(y))
+        r = acierto_direccional(y, p, np.arange(len(y)) // 2, n_replicas=500)
+        inferior, superior = r["ic_95"]
+        assert inferior <= 0.5 <= superior
+
+    def test_el_intervalo_no_es_binomial_iid(self) -> None:
+        """Con errores agrupados por sesión, el IC debe salir más ancho que el i.i.d.
+
+        Un modelo que acierta perfecto en unas sesiones y falla siempre en
+        otras tiene el mismo 50 % agregado que uno que falla al azar, pero su
+        incertidumbre es distinta: el i.i.d. la subestimaría porque asume
+        muestras independientes. Si el bootstrap por sesión diera el mismo
+        ancho, la autocorrelación no se estaría respetando y el plan §4
+        quedaría sin cumplir.
+        """
+        n_bloques, tam_bloque = 100, 10
+        bloques = np.repeat(np.arange(n_bloques), tam_bloque)
+        y = np.tile([LABEL_DOWN, LABEL_UP], n_bloques * tam_bloque // 2)
+        p = y.copy()
+        falla = bloques % 2 == 1
+        p[falla & (y == LABEL_DOWN)] = LABEL_UP
+        p[falla & (y == LABEL_UP)] = LABEL_DOWN
+
+        r = acierto_direccional(y, p, bloques, n_replicas=1000)
+        assert r["ratio"] == pytest.approx(0.5)
+        ancho_ic = r["ic_95"][1] - r["ic_95"][0]
+        ancho_iid = 1.96 * np.sqrt(r["ratio"] * (1 - r["ratio"]) / r["n"])
+        assert ancho_ic > ancho_iid * 2
+
+    def test_si_no_hay_casos_direccionales_lo_dice(self) -> None:
+        y = np.array([LABEL_STABLE] * 6)
+        r = acierto_direccional(y, y, np.zeros(6, dtype=int), n_replicas=200)
+        assert r["n"] == 0 and r["ratio"] is None and r["ic_95"] is None
+        assert r["casos_direccionales_verdad"] == 0
+
+    def test_rechaza_entradas_desalineadas(self) -> None:
+        with pytest.raises(ValueError):
+            acierto_direccional(np.zeros(4, int), np.zeros(3, int), np.zeros(4, int))
+
+
+# ---------------------------------------------------------------------------
+# Calibración por clase predicha
+# ---------------------------------------------------------------------------
+
+class TestCalibracionPorClase:
+    def test_desglosa_por_clase_predicha(self) -> None:
+        y_true = np.array([LABEL_STABLE, LABEL_STABLE, LABEL_DOWN, LABEL_UP])
+        y_pred = np.array([LABEL_STABLE, LABEL_DOWN, LABEL_DOWN, LABEL_UP])
+        conf = np.array([0.9, 0.7, 0.6, 0.8])
+        filas = {f["clase"]: f for f in calibracion_por_clase(y_true, y_pred, conf)}
+        assert filas["STABLE"]["n"] == 1
+        assert filas["STABLE"]["precision_observada"] == pytest.approx(1.0)
+        # De las dos predichas como DOWN, una acertó y la otra no.
+        assert filas["DOWN"]["n"] == 2
+        assert filas["DOWN"]["precision_observada"] == pytest.approx(0.5)
+        assert filas["DOWN"]["confianza_media"] == pytest.approx(0.65)
+        assert filas["UP"]["n"] == 1
+
+    def test_una_clase_nunca_predicha_no_se_inventa(self) -> None:
+        y = np.array([LABEL_STABLE] * 4)
+        filas = {f["clase"]: f for f in calibracion_por_clase(y, y, np.full(4, 0.5))}
+        assert filas["UP"]["n"] == 0
+        assert filas["UP"]["precision_observada"] is None
+        assert sum(f["n"] for f in filas.values()) == len(y)
+
+    def test_expone_la_sobreconfianza_de_una_clase(self) -> None:
+        """Un 95 % sostenido con acierto real del 50 % debe verse como brecha."""
+        y_true = np.array([LABEL_DOWN, LABEL_UP] * 50)
+        y_pred = np.full(100, LABEL_DOWN)
+        filas = {f["clase"]: f
+                 for f in calibracion_por_clase(y_true, y_pred, np.full(100, 0.95))}
+        assert filas["DOWN"]["precision_observada"] == pytest.approx(0.5)
+        assert filas["DOWN"]["brecha"] < -0.4

@@ -76,12 +76,15 @@ from src.ai.features import (
 from src.ai.metrics import (
     UMBRALES_PERFIL,
     Metricas,
+    acierto_direccional,
     baseline_azar_por_priors,
     baseline_mayoritario,
     baseline_persistencia,
     bootstrap_bloques,
     bootstrap_pareado,
     calibracion,
+    calibracion_por_clase,
+    corregir_posterior,
     hay_ventaja_demostrada,
     macro_f1,
     metricas_por_tercios,
@@ -90,6 +93,7 @@ from src.ai.metrics import (
     tabla_umbrales,
 )
 from src.ai.model import (
+    DEFAULT_LINEAR_CONFIG,
     DEFAULT_MODEL_CONFIG,
     NasdaqLinear,
     NasdaqMLP,
@@ -99,6 +103,11 @@ from src.ai.model import (
 
 SEMILLA_DEFECTO = 20261017
 MODELOS_DIR = Path("models")
+
+#: Arquitecturas entrenables. Se guardan **las dos** en cada corrida y la
+#: configuración decide cuál queda activa, para que cambiar de opinión sea un
+#: ajuste de entorno y no un reentrenamiento.
+ARQUITECTURAS = ("mlp", "linear")
 
 
 @dataclass(frozen=True)
@@ -218,21 +227,44 @@ def entrenar(modelo: nn.Module, ds: Dataset, cfg: Entrenamiento, pesos: np.ndarr
     return modelo, historial, mejor_f1
 
 
-def predecir(modelo: nn.Module, ds: Dataset, split: str,
-             dispositivo: str) -> tuple[np.ndarray, np.ndarray]:
-    """Devuelve `(etiquetas_predichas, confianza)` para un corte.
+def _softmax(modelo: nn.Module, ds: Dataset, split: str, dispositivo: str) -> np.ndarray:
+    """Softmax **cruda** de la red, `(N, 3)` en orden DOWN/STABLE/UP.
 
-    La confianza es la probabilidad softmax de la clase ganadora, tal y como la
-    define RF-304. **El modelo no aplica ningún umbral**: eso es del RiskManager.
+    Es el posterior bajo los pesos con que se entrenó, no el real. Se expone
+    separado de `predecir` porque la decisión se toma aquí y la confianza se
+    lee de otro sitio, y mezclarlas sin decirlo es como se llega a reportar un
+    número que mide otra cosa.
     """
     X, _ = ds.matrix(split)
     if len(X) == 0:
-        return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=float)
+        return np.zeros((0, len(LABEL_NAMES)), dtype=np.float32)
     entrada = torch.from_numpy(_aplanar(X, ds)).to(dispositivo)
     modelo.eval()
     with torch.no_grad():
-        probabilidades = torch.softmax(modelo(entrada), dim=1).cpu().numpy()
-    return probabilidades.argmax(axis=1).astype(np.int64), probabilidades.max(axis=1)
+        return torch.softmax(modelo(entrada), dim=1).cpu().numpy()
+
+
+def predecir(modelo: nn.Module, ds: Dataset, split: str, dispositivo: str,
+             class_weights: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Devuelve `(etiquetas_predichas, confianza_corregida)` para un corte.
+
+    Dos cosas distintas, y la distinción importa:
+
+    - **La etiqueta** es el `argmax` de la softmax cruda: la decisión de la red,
+      la misma que se evaluó en las métricas de clasificación.
+    - **La confianza** es el posterior corregido por prior de esa etiqueta,
+      `p ∝ softmax / w_c` renormalizado con los pesos de train. **No es la
+      softmax cruda.**
+
+    **El modelo no aplica ningún umbral**: eso es del `RiskManager`.
+    """
+    crudas = _softmax(modelo, ds, split, dispositivo)
+    if len(crudas) == 0:
+        return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=float)
+    predichas = crudas.argmax(axis=1).astype(np.int64)
+    corregidas = corregir_posterior(crudas, class_weights)
+    confianza = corregidas[np.arange(len(corregidas)), predichas]
+    return predichas, confianza
 
 
 def entrenar_lineal(ds: Dataset, cfg: Entrenamiento, pesos: np.ndarray,
@@ -301,10 +333,24 @@ def construir_informe(ds: Dataset, modelo_mlp: nn.Module, modelo_lineal: nn.Modu
     reales = {s: np.asarray([m.y for m in getattr(ds, s)], dtype=np.int64)
               for s in ("train", "val", "test")}
     sesiones_test = sesiones_de(ds.test)
+    sesiones_val = sesiones_de(ds.val)
 
-    pred_mlp = {s: predecir(modelo_mlp, ds, s, dispositivo) for s in ("train", "val", "test")}
-    pred_lineal = {s: predecir(modelo_lineal, ds, s, dispositivo) for s in ("train", "val", "test")}
+    pred_mlp = {s: predecir(modelo_mlp, ds, s, dispositivo, pesos)
+                for s in ("train", "val", "test")}
+    pred_lineal = {s: predecir(modelo_lineal, ds, s, dispositivo, pesos)
+                   for s in ("train", "val", "test")}
 
+    # Cuántas veces la corrección de prior cambia la clase ganadora. Se reporta
+    # por honestidad: la decisión se toma sobre la softmax cruda y la confianza
+    # sobre la corregida, y el lector debe poder ver cuánto divergen.
+    crudas_test = _softmax(modelo_mlp, ds, "test", dispositivo)
+    corregidas_test = corregir_posterior(crudas_test, pesos)
+    divergencia = (int((corregidas_test.argmax(axis=1) != crudas_test.argmax(axis=1)).sum())
+                   if len(crudas_test) else 0)
+
+    y_val = reales["val"]
+    pred_val_mlp = pred_mlp["val"][0]
+    conf_val = pred_mlp["val"][1]
     y_test = reales["test"]
     pred_test_mlp = pred_mlp["test"][0]
     conf_test = pred_mlp["test"][1]
@@ -343,12 +389,31 @@ def construir_informe(ds: Dataset, modelo_mlp: nn.Module, modelo_lineal: nn.Modu
 
     return {
         "modelo": {
+            # La especificación, no el rendimiento: SRS §5.3 y SDD §5.3.2 exigen
+            # una red neuronal. El lineal se entrena y se reporta igual como
+            # referencia, y queda seleccionable con MODEL_ARCH.
             "tipo": "mlp",
+            "seleccion_por": "especificacion (SRS §5.3, SDD §5.3.2): requiere red neuronal",
             "arquitectura": f"{WINDOW * len(FEATURE_NAMES)}→64→32→{len(LABEL_NAMES)}",
             "parametros": sum(p.numel() for p in modelo_mlp.parameters()),
             "dispositivo_entrenamiento": dispositivo,
             "torch_version": str(torch.__version__),
             "python": platform.python_version(),
+        },
+        # La confianza NO es la softmax cruda. Ver `corregir_posterior`.
+        "confianza": {
+            "tipo": "posterior_corregido_por_prior",
+            "descripcion": (
+                "p(c|x) ∝ softmax(c|x) / w_c, renormalizada con los pesos de clase "
+                "del train. Es un cambio de escala sin parámetros: no se ajustó "
+                "nada contra val ni contra test."
+            ),
+            "softmax_cruda_expuesta": False,
+            "divergencia_contra_argmax_corregido": {
+                "muestras": len(crudas_test),
+                "cambios_de_clase": divergencia,
+                "fraccion": (divergencia / len(crudas_test)) if len(crudas_test) else None,
+            },
         },
         "esquema_features": FEATURE_SCHEMA_VERSION,
         "hiperparametros": asdict(cfg),
@@ -387,9 +452,25 @@ def construir_informe(ds: Dataset, modelo_mlp: nn.Module, modelo_lineal: nn.Modu
             "lineal": {"macro_f1": macro_f1(y_test, pred_test_lineal)},
         },
         "comparaciones_test": comparaciones,
+        # La calibración se valida PRIMERO en val y después se reporta test una
+        # única vez, sin ningún bucle de ajuste contra test.
+        "calibracion_val": calibracion(y_val, pred_val_mlp, conf_val),
         "calibracion_test": calibracion(y_test, pred_test_mlp, conf_test),
+        "calibracion_por_clase_val": calibracion_por_clase(y_val, pred_val_mlp, conf_val),
+        "calibracion_por_clase_test": calibracion_por_clase(y_test, pred_test_mlp, conf_test),
+        "umbrales_val": tabla_umbrales(y_val, pred_val_mlp, conf_val),
         "umbrales_test": tabla_umbrales(y_test, pred_test_mlp, conf_test),
         "umbrales_definidos": UMBRALES_PERFIL,
+        # Solo cuentan los casos en los que hay dirección que acertar: STABLE
+        # queda fuera de los dos lados.
+        "acierto_direccional_test": acierto_direccional(
+            y_test, pred_test_mlp, sesiones_test,
+            n_replicas=replicas, semilla=cfg.semilla,
+        ),
+        "cobertura_direccional_val": acierto_direccional(
+            y_val, pred_val_mlp, sesiones_val,
+            n_replicas=replicas, semilla=cfg.semilla,
+        ),
         "tercios_test": metricas_por_tercios(y_test, pred_test_mlp),
     }
 
@@ -430,11 +511,35 @@ def _cliente_influx():
                           org=os.environ.get("INFLUXDB_ORG", "ritech"))
 
 
+def arquitectura_activa(valor: str | None = None) -> str:
+    """Qué arquitectura queda como artefacto activo: `--arquitectura`, si no `MODEL_ARCH`.
+
+    Cada corrida entrena **las dos** y las guarda ambas; esta función decide
+    cuál puntea `active.json` y por lo tanto qué carga el servicio de M1.
+
+    **La elección no se apoya en el rendimiento.** El lineal igualó o superó
+    ligeramente al MLP en el Sprint 3 y la diferencia no alcanzó significancia
+    estadística (informe §4). Se sirve el MLP porque el SRS §5.3 y el SDD §5.3.2
+    exigen una red neuronal: la especificación manda, no una métrica que en
+    este dataset no los separa. `MODEL_ARCH=linear` permite servir el otro
+    sin tocar código.
+    """
+    candidato = (valor or os.environ.get("MODEL_ARCH") or "mlp").strip().lower()
+    if candidato not in ARQUITECTURAS:
+        raise SystemExit(
+            f"arquitectura desconocida: {candidato!r}; usa {' o '.join(ARQUITECTURAS)}"
+        )
+    return candidato
+
+
 def _parsear_argumentos(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m src.ai.train",
         description="Entrena el modelo predictivo local (RF-301/302) y guarda el artefacto.",
     )
+    parser.add_argument("--arquitectura", choices=ARQUITECTURAS, default=None,
+                        help=("qué arquitectura se deja activa; las dos se guardan. "
+                              "Por defecto se lee MODEL_ARCH y, si no está, mlp"))
     parser.add_argument("--salida", default=str(MODELOS_DIR),
                         help="directorio de salida para artefacto e informe (por defecto: models/)")
     parser.add_argument("--inicio", default=None,
@@ -465,6 +570,77 @@ def _marcas_de_fecha(inicio: str | None, fin: str | None) -> tuple[int | None, i
         return int(dt.timestamp() * 1000)
 
     return (a_ms(inicio) if inicio else None, a_ms(fin) if fin else None)
+
+
+def _guardar(salida: Path, marca: str, activa: str,
+             entrenadas: dict[str, tuple[nn.Module, dict[str, Any], int, float]],
+             pesos: np.ndarray, ds: Dataset, dispositivo: str,
+             informe: dict[str, Any]) -> tuple[dict[str, str], str]:
+    """Escribe un artefacto por arquitectura y el puntero `active.json`.
+
+    Devuelve `(rutas, ruta_informe)`.
+
+    Se guarda **las dos** arquitecturas y `MODEL_ARCH` (o `--arquitectura`)
+    decide cuál queda activa, así que cambiar de opinión es un ajuste de
+    entorno y no un reentrenamiento.
+
+    **La llave del informe no es la del artefacto**: `model_type` es `linear`
+    porque es el identificador que recibe `make_model`, pero el informe la
+    llama `lineal`. Esa diferencia ya causó un `KeyError` al salir del
+    entrenamiento, después de haberlo pagado entero; `test_guardar_escribe_los_dos_artefactos`
+    es la regresión.
+    """
+    rutas: dict[str, str] = {}
+    ruta_informe = ""
+
+    for tipo, (modelo, cfg_modelo, epocas, mejor_f1) in entrenadas.items():
+        llave = "lineal" if tipo == "linear" else tipo
+        nombre = f"ritech-{tipo}-{marca}"
+        ruta_pt = salida / f"{nombre}.pt"
+        ruta_json = salida / f"{nombre}.metrics.json"
+        artifact = build_artifact(
+            modelo, model_type=tipo, model_config=cfg_modelo,
+            class_weights=pesos,
+            stats_mean=ds.stats.mean, stats_std=ds.stats.std,
+            stable_band_pct=ds.config.stable_band_pct,
+            trained_at_ms=int(time.time() * 1000), training_device=dispositivo,
+            metrics={
+                "macro_f1_test": informe["metricas"]["test"][llave]["macro_f1"],
+                "macro_f1_val": informe["metricas"]["val"][llave]["macro_f1"],
+                "macro_f1_test_lineal": informe["baselines_test"]["lineal"]["macro_f1"],
+                "macro_f1_test_persistencia": informe["baselines_test"]["persistencia"]["macro_f1"],
+                "epocas_entrenadas": epocas,
+                "mejor_val_macro_f1": mejor_f1,
+                "duracion_segundos": informe.get("duracion_segundos"),
+                # Se deja escrito para que nadie confunda la confianza con la
+                # softmax cruda al leer el artefacto suelto.
+                "confianza": "posterior corregido por prior",
+            },
+        )
+        save_artifact(artifact, ruta_pt)
+        ruta_json.write_text(json.dumps(informe, indent=2, ensure_ascii=False), encoding="utf-8")
+        rutas[tipo] = str(ruta_pt)
+        if tipo == activa:
+            ruta_informe = str(ruta_json)
+
+    # Puntero al artefacto activo: lo usan el servicio de inferencia de M1 y el
+    # timer de reentrenamiento. Archivo de texto, no enlace simbólico, para no
+    # acoplar el código a las convenciones de un SO concreto (convención 5.4).
+    (salida / "active.json").write_text(
+        json.dumps(
+            {
+                "path": rutas[activa],
+                "arquitectura": activa,
+                "entrenado_en": marca,
+                "esquema": FEATURE_SCHEMA_VERSION,
+                "confianza": "posterior corregido por prior",
+                "disponibles": rutas,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return rutas, ruta_informe
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -542,38 +718,17 @@ def main(argv: list[str] | None = None) -> int:
     marca = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     salida = Path(args.salida)
     salida.mkdir(parents=True, exist_ok=True)
-    nombre = f"ritech-mlp-{marca}"
-    ruta_pt = salida / f"{nombre}.pt"
-    ruta_json = salida / f"{nombre}.metrics.json"
-
-    artifact = build_artifact(
-        modelo_mlp, model_type="mlp", model_config=dict(DEFAULT_MODEL_CONFIG),
-        stats_mean=ds.stats.mean, stats_std=ds.stats.std,
-        stable_band_pct=ds.config.stable_band_pct,
-        trained_at_ms=int(time.time() * 1000), training_device=dispositivo,
-        metrics={
-            "macro_f1_test": informe["metricas"]["test"]["mlp"]["macro_f1"],
-            "macro_f1_val": informe["metricas"]["val"]["mlp"]["macro_f1"],
-            "macro_f1_test_lineal": informe["baselines_test"]["lineal"]["macro_f1"],
-            "macro_f1_test_persistencia": informe["baselines_test"]["persistencia"]["macro_f1"],
-            "duracion_segundos": informe["duracion_segundos"],
-        },
-    )
-    save_artifact(artifact, ruta_pt)
-    ruta_json.write_text(json.dumps(informe, indent=2, ensure_ascii=False), encoding="utf-8")
-
-    # Puntero al artefacto activo: lo usan el servicio de inferencia de M1 y el
-    # timer de reentrenamiento. Archivo de texto, no enlace simbólico, para no
-    # acoplar el código a las convenciones de un SO concreto (convención 5.4).
-    (salida / "active.json").write_text(
-        json.dumps({"path": str(ruta_pt), "entrenado_en": marca, "esquema": FEATURE_SCHEMA_VERSION},
-                   indent=2),
-        encoding="utf-8",
-    )
+    activa = arquitectura_activa(args.arquitectura)
+    entrenadas: dict[str, tuple[nn.Module, dict[str, Any], int, float]] = {
+        "mlp": (modelo_mlp, dict(DEFAULT_MODEL_CONFIG), len(hist_mlp), f1_mlp),
+        "linear": (modelo_lineal, dict(DEFAULT_LINEAR_CONFIG), len(hist_lineal), f1_lineal),
+    }
+    rutas, ruta_informe = _guardar(salida, marca, activa, entrenadas,
+                                   pesos, ds, dispositivo, informe)
 
     _imprimir_resumen(informe)
-    print(f"\nArtefacto: {ruta_pt}", file=sys.stderr)
-    print(f"Informe:   {ruta_json}", file=sys.stderr)
+    print(f"\nArtefacto activo ({activa}): {rutas[activa]}", file=sys.stderr)
+    print(f"Informe:                  {ruta_informe}", file=sys.stderr)
     return 0
 
 
@@ -595,12 +750,19 @@ def _imprimir_resumen(informe: dict) -> None:
         marca = "SÍ" if datos["ventaja_demostrada"] else "NO"
         print(f"    vs {nombre:<18} Δ={datos['diferencia']:+.4f}  "
               f"IC [{ic[0]:+.4f}, {ic[1]:+.4f}]  {marca}")
-    print("\n  Umbrales de perfil de riesgo sobre test:")
+    print("\n  Umbrales de perfil de riesgo sobre test (confianza corregida por prior):")
     for fila in informe["umbrales_test"]:
         pu = f"{fila['precision_up']:.3f}" if fila["precision_up"] is not None else "—"
         pd_ = f"{fila['precision_down']:.3f}" if fila["precision_down"] is not None else "—"
         print(f"    ≥{fila['umbral']:.2f}: {fila['n_predicciones']:>5} predicciones "
               f"({fila['pct_del_total']:5.1f}%)  precisión UP {pu} / DOWN {pd_}")
+
+    dir_ = informe["acierto_direccional_test"]
+    ic = dir_["ic_95"]
+    ic_txt = f"[{ic[0]:.3f}, {ic[1]:.3f}]" if ic else "—"
+    print("\n  Acierto direccional (solo casos donde verdad Y predicción son UP/DOWN):")
+    print(f"    {dir_['aciertos']}/{dir_['n']} = {dir_['ratio']:.3f}  IC 95% {ic_txt}")
+    print(f"    (de {dir_['casos_direccionales_verdad']} muestras con verdad direccional)")
 
 
 if __name__ == "__main__":
