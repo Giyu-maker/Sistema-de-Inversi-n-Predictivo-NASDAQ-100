@@ -140,43 +140,45 @@ def baseline_mayoritario(y_train: np.ndarray, n: int,
     return np.full(n, int(cuenta.argmax()), dtype=np.int64)
 
 
-def baseline_azar_por_priors(y_train: np.ndarray, n: int, *, semilla: int,
+def baseline_azar_por_priors(y_train: np.ndarray, y_true: np.ndarray, *, semilla: int,
                              repeticiones: int = 1_000,
                              n_clases: int = N_CLASES) -> tuple[np.ndarray, float, tuple[float, float]]:
     """Baseline 2 (plan §3): clase muestreada según la distribución de **train**.
 
     Devuelve `(predicción_representativa, macro_f1_medio, ic_95)`.
 
-    Se promedian `repeticiones` tiradas porque una sola tiene demasiada varianza
-    para servir de referencia, y se devuelve además una tirada determinista (la
-    primera, con la semilla fija) para poder pasarla por el mismo bootstrap
-    pareado que el resto de baselines y compararlos con idéntico procedimiento.
+    **Se evalúa contra `y_true`**, las etiquetas reales del corte. Medirlo
+    contra cualquier otra cosa —la clase mayoritaria, por ejemplo— devuelve un
+    número con apariencia de métrica que en realidad mide otra relación y que
+    no se puede comparar con nada del informe.
+
+    Se promedian `repeticiones` tiradas porque una sola tiene demasiada
+    varianza para servir de referencia, y se devuelve además una tirada
+    determinista (la primera, con la semilla fija) para poder pasarla por el
+    mismo bootstrap pareado que el resto de baselines y compararlos con
+    idéntico procedimiento.
     """
     y_train = np.asarray(y_train)
+    y_true = np.asarray(y_true)
     cuenta = np.bincount(y_train, minlength=n_clases).astype(float)
     if cuenta.sum() == 0:
         raise ValueError("no hay muestras de train para estimar los priors")
-    if n <= 0:
-        raise ValueError("n debe ser positivo")
+    if len(y_true) == 0:
+        raise ValueError("no hay etiquetas reales contra las que evaluar el baseline")
     priors = cuenta / cuenta.sum()
 
     rng = np.random.RandomState(semilla)
-    moda = _moda(y_train, n_clases)
     valores = np.empty(repeticiones, dtype=float)
     representativa: np.ndarray | None = None
     for r in range(repeticiones):
-        tirada = rng.choice(n_clases, size=n, p=priors)
+        tirada = rng.choice(n_clases, size=len(y_true), p=priors)
         if r == 0:
             representativa = tirada
-        valores[r] = macro_f1(np.full(n, moda, dtype=np.int64), tirada, n_clases)
+        valores[r] = macro_f1(y_true, tirada, n_clases)
 
     inferior, superior = np.percentile(valores, PERCENTILES)
     assert representativa is not None
     return representativa, float(valores.mean()), (float(inferior), float(superior))
-
-
-def _moda(y_train: np.ndarray, n_clases: int) -> int:
-    return int(np.bincount(np.asarray(y_train), minlength=n_clases).argmax())
 
 
 def baseline_persistencia(muestras: Sequence) -> np.ndarray:

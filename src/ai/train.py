@@ -319,7 +319,7 @@ def construir_informe(ds: Dataset, modelo_mlp: nn.Module, modelo_lineal: nn.Modu
     moda = int(np.bincount(reales["train"], minlength=len(LABEL_NAMES)).argmax())
     mayoritario = np.full(len(y_test), moda, dtype=np.int64)
     azar_pred, azar_media, azar_ic = baseline_azar_por_priors(
-        reales["train"], len(y_test), semilla=cfg.semilla
+        reales["train"], y_test, semilla=cfg.semilla
     )
     persistencia = baseline_persistencia(ds.test)
 
@@ -375,7 +375,14 @@ def construir_informe(ds: Dataset, modelo_mlp: nn.Module, modelo_lineal: nn.Modu
         "baselines_test": {
             "mayoritario": {"clase": LABEL_NAMES[moda],
                             "macro_f1": macro_f1(y_test, mayoritario)},
-            "azar_por_priors": {"macro_f1_medio": azar_media, "ic_95": list(azar_ic)},
+            "azar_por_priors": {
+                "macro_f1_medio": azar_media,
+                "ic_95": list(azar_ic),
+                # La misma tirada que entra en la comparación pareada, para que
+                # `macro_f1_baseline` del bloque de comparaciones sea trazable.
+                "macro_f1_tirada_representativa": macro_f1(y_test, azar_pred),
+                "tiradas_promediadas": 1_000,
+            },
             "persistencia": {"macro_f1": macro_f1(y_test, persistencia)},
             "lineal": {"macro_f1": macro_f1(y_test, pred_test_lineal)},
         },
@@ -392,16 +399,33 @@ def construir_informe(ds: Dataset, modelo_mlp: nn.Module, modelo_lineal: nn.Modu
 # ---------------------------------------------------------------------------
 
 def _cliente_influx():
+    """Cliente de InfluxDB para el entrenamiento (solo corre en la Máquina 2).
+
+    Se lee del entorno y **no tiene valor por defecto escrito en el código**:
+    la convención 15.1 exige que las URLs de servicios vengan del entorno, para
+    que en el despliegue solo haya que cambiar la configuración. En desarrollo
+    esa URL vive en `.env`.
+
+    El token es el administrador porque el reentrenamiento lee todo el
+    histórico del bucket. Es correcto que solo viva en M2: la Máquina 1, que
+    sí recibe un token de solo lectura y acotado al bucket, nunca entrena
+    (§15.2).
+    """
     from influxdb_client import InfluxDBClient
-    url = os.environ.get("INFLUXDB_URL") or os.environ.get("INFLUX_URL")
+    url = os.environ.get("INFLUXDB_URL")
     if not url:
         raise SystemExit(
             "falta INFLUXDB_URL en el entorno. Cargar con:\n"
-            "  set -a; source .env; source .env.local; set +a"
+            "  set -a; source .env; source .env.local; set +a\n"
+            "(en desarrollo la URL está en .env)"
         )
-    token = os.environ.get("INFLUXDB_TOKEN")
+    token = os.environ.get("INFLUXDB_TOKEN") or os.environ.get("INFLUXDB_ADMIN_TOKEN")
     if not token:
-        raise SystemExit("falta INFLUXDB_TOKEN en el entorno")
+        raise SystemExit(
+            "falta INFLUXDB_TOKEN en el entorno. En desarrollo de M2 es "
+            "INFLUXDB_ADMIN_TOKEN; en M1 se usa un token de solo lectura acotado "
+            "al bucket, aunque M1 no entrena."
+        )
     return InfluxDBClient(url=url, token=token,
                           org=os.environ.get("INFLUXDB_ORG", "ritech"))
 

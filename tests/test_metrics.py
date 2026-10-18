@@ -150,32 +150,57 @@ class TestBaselines:
         assert macro_f1(y, baseline_mayoritario(y, len(y))) == pytest.approx(0.2552, abs=0.001)
 
     def test_azar_es_reproducible_con_la_misma_semilla(self) -> None:
-        y = np.array([1] * 60 + [0] * 20 + [2] * 20)
-        a = baseline_azar_por_priors(y, 300, semilla=SEMILLA, repeticiones=200)
-        b = baseline_azar_por_priors(y, 300, semilla=SEMILLA, repeticiones=200)
+        y_train = np.array([1] * 60 + [0] * 20 + [2] * 20)
+        y_true = np.array([1] * 60 + [0] * 20 + [2] * 20)
+        a = baseline_azar_por_priors(y_train, y_true, semilla=SEMILLA, repeticiones=200)
+        b = baseline_azar_por_priors(y_train, y_true, semilla=SEMILLA, repeticiones=200)
         assert np.array_equal(a[0], b[0])
         assert a[1] == b[1]
+        assert a[2] == b[2]
 
     def test_azar_cambia_con_la_semilla(self) -> None:
-        y = np.array([1] * 60 + [0] * 20 + [2] * 20)
-        a = baseline_azar_por_priors(y, 300, semilla=SEMILLA, repeticiones=50)[0]
-        b = baseline_azar_por_priors(y, 300, semilla=SEMILLA + 7, repeticiones=50)[0]
+        y_train = np.array([1] * 60 + [0] * 20 + [2] * 20)
+        y_true = np.array([1] * 60 + [0] * 20 + [2] * 20)
+        a = baseline_azar_por_priors(y_train, y_true, semilla=SEMILLA, repeticiones=50)[0]
+        b = baseline_azar_por_priors(y_train, y_true, semilla=SEMILLA + 7, repeticiones=50)[0]
         assert not np.array_equal(a, b)
 
     def test_azar_respeta_los_priors_de_train(self) -> None:
         y_train = np.array([1] * 80 + [0] * 10 + [2] * 10)
-        pred, media, ic = baseline_azar_por_priors(y_train, 20_000, semilla=SEMILLA,
+        y_true = np.tile(y_train, 200)
+        pred, media, ic = baseline_azar_por_priors(y_train, y_true, semilla=SEMILLA,
                                                    repeticiones=1)
         cuenta = np.bincount(pred, minlength=3) / len(pred)
         assert cuenta[1] == pytest.approx(0.80, abs=0.02)
         assert cuenta[0] == pytest.approx(0.10, abs=0.02)
         assert media > 0 and ic[0] <= ic[1]
 
-    def test_azar_rechaza_train_vacio(self) -> None:
+    def test_azar_se_evalua_contra_las_etiquetas_reales(self) -> None:
+        """Regresión: se medía contra la clase mayoritaria como si fuera la verdad.
+
+        Eso devolvía un número con apariencia de macro-F1 que no se puede
+        comparar con ningún otro del informe, y que además no cuadraba con la
+        tirada representativa evaluada bien. Aquí se comprueba que el promedio
+        cae en la zona del baseline mayoritario, que es donde un clasificador
+        aleatorio con esos priors tiene que estar.
+        """
+        y_train = np.array([1] * 62 + [0] * 19 + [2] * 19)
+        y_true = np.tile(y_train, 50)
+        _, media, _ = baseline_azar_por_priors(y_train, y_true, semilla=SEMILLA,
+                                               repeticiones=400)
+        referencia = macro_f1(y_true, baseline_mayoritario(y_train, len(y_true)))
+        assert abs(media - referencia) < 0.10, (
+            f"el azar dio {media:.4f} frente a {referencia:.4f} del mayoritario: "
+            "se estaría midiendo contra un objetivo equivocado"
+        )
+
+    def test_azar_rechaza_entradas_vacias(self) -> None:
+        con_muestras = np.array([0, 1, 2])
+        con_vacio = np.array([], dtype=np.int64)
         with pytest.raises(ValueError, match="no hay muestras"):
-            baseline_azar_por_priors(np.array([], dtype=np.int64), 10, semilla=SEMILLA)
-        with pytest.raises(ValueError):
-            baseline_azar_por_priors(np.array([0, 1, 2]), 0, semilla=SEMILLA)
+            baseline_azar_por_priors(con_vacio, con_vacio, semilla=SEMILLA)
+        with pytest.raises(ValueError, match="no hay etiquetas reales"):
+            baseline_azar_por_priors(con_muestras, con_vacio, semilla=SEMILLA)
 
     def test_persistencia_lee_persistence_y(self) -> None:
         muestras = [_Muestra(0, LABEL_UP), _Muestra(0, LABEL_DOWN), _Muestra(1, LABEL_STABLE)]
