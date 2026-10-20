@@ -209,3 +209,61 @@ Queda explícito por escrito que esta operación:
 - **no viola el SRS §4.4**: la inmutabilidad protege el histórico *durante la operación normal*; esta acción es una migración consciente de un administrador sobre datos que se vuelven a obtener reproduciblemente desde el proveedor.
 
 Ver el detalle completo en CR-001, sección "Migración de datos".
+
+---
+
+## CR-004 — Superficie de la API de M2 en Fase B: solo lectura, sin sesión, y estado `CERRADO`
+
+| Campo | Valor |
+|---|---|
+| **Fecha de detección** | Sprint 3, Fase B1 — 20/10/2026 |
+| **Solicitante** | Equipo de desarrollo (Naranja's Team) |
+| **Documentos afectados** | SRS v1.0 §6.2 (RNF-001, RNF-003, RNF-005); SRS §10.3 (estados visuales); SDD v1.0 (no prevé la interfaz HTTP de M2) |
+| **Tipo** | Alcance aceptado / adición de interfaz |
+| **Prioridad** | Media (la brecha de seguridad se cierra en el Sprint 4) |
+| **Estado** | Implementado y verificado en vivo; pendiente de aprobación formal |
+
+### Contexto
+
+El backlog Ítem 8 (Dashboard) exige que la interfaz «se comunica con la API de la Máquina 2», pero ni el SRS ni el SDD v1.0 describen esa API: ni sus rutas, ni su alcance de escritura, ni su modelo de sesión. La Fase B1 la construye (`src/endpoints/`) y al hacerlo toca tres puntos del SRS que conviene dejar escritos:
+
+1. **RNF-001** supone un «Iniciar Sesión» entre las acciones críticas de 2 toques → en algún momento debe existir sesión.
+2. **RNF-005** exige que ningún dato salga del hardware local y que no haya accesos no autorizados.
+3. **SRS §10.3** define tres estados visuales (verde, amarillo, rojo parpadeante del Kill-Switch) → el sistema apagado no tiene estado propio.
+
+### Cambio propuesto (implementado en Fase B1)
+
+La API de M2 queda definida como **SOLO GET**, con siete rutas y sin ninguna operación de escritura:
+
+| Ruta | Contenido |
+|---|---|
+| `GET /api/health` | vida del proceso |
+| `GET /api/status` | regla de estado (verde/amarillo/cerrado) + IA + configuración + veredicto de señal |
+| `GET /api/candles` | velas 5m, con agregación 15m/1h/1d resuelta en Flux |
+| `GET /api/predictions` (+ `/latest`) | historial con resultado real (una sola consulta a InfluxDB por página) + última predicción con su señal |
+| `GET /api/yield` | rendimiento virtual 2x, siempre con `virtual: true` |
+| `GET /api/model-quality` | nota permanente de calidad del modelo (D5), también con M1 caído |
+
+más `GET /modelo` en el servicio de M1 (contrato del artefacto: ventana, banda, acierto direccional **con su fuente**).
+
+Y dos comportamientos que el SRS no nombra:
+
+- **Estado `CERRADO`**: neutro, fuera de la sesión NYSE. Sin él, la antigüedad del dato dejaría el sistema en amarillo 17 horas cada día por la sola ausencia de ticks que no existen (SRS §10.3 solo prevé verde/amarillo/rojo; el rojo es exclusivo del Kill-Switch y no se usa en esta fase).
+- **Errores en español** (`{"mensaje": ...}` en 404/405/422/503), sin stack traces ni claves crudas.
+
+### Limitación declarada (no oculta)
+
+La API **no tiene autenticación, ni usuarios, ni roles**. Es una brecha **declarada** frente a RNF-001 (login) y RNF-005 (autorización), no una omisión accidental:
+
+- Mitigación en esta fase: `127.0.0.1` por defecto (no se publica a la intranet), SOLO GET (un POST contesta 405, no ejecuta), sin credenciales ni secretos en ninguna respuesta.
+- Cierre: **Sprint 4**, junto con `trader_users`, permisos por rol, el Kill-Switch y la deuda D4 del backlog (rol de solo lectura en PostgreSQL).
+- El contrato está fijado por tests (`tests/test_endpoints_*.py`) para que ampliarlo después no rompa nada en silencio.
+
+### Verificación
+
+- 634 pruebas en verde (`pytest -q`); 65 cubren ciclo de predicción y endpoints, y 7 el `GET /modelo`.
+- En vivo sobre la máquina de desarrollo, en Docker (20/10/2026): `api` healthy; `/api/status` devolviendo `CERRADO` con IA disponible; **ciclo completo scheduler → M1 → `ai_predictions`** con una predicción real persistida (UP, confianza 0,28 → correctamente no operable frente al umbral 0,75); `/api/candles`, `/api/yield` y `/api/model-quality` sirviendo datos reales; y la rama de fallo vista también en vivo: con M1 inalcanzable el ciclo registró el error y **no persistió nada**.
+
+### Impacto
+
+Funcional: ninguno sobre lo ya aprobado — no modifica ningún RF-XXX ni RNF-XXX existente; añade la interfaz que el Ítem 8 necesita. La medición de RNF-003 (ver `docs/backlog.md`) queda **provisional** hasta que la quinta componente, la actualización de la interfaz, exista en la Fase B2.

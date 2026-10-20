@@ -30,7 +30,7 @@ Twelve Data ──▶ IngestionEngine ──▶ InfluxDB ──▶ LocalPredicti
 |---|---|---|---|
 | Sistema | CachyOS x86_64 | CachyOS x86_64 | Windows 11 |
 | GPU | GTX 1660 SUPER | integrada | integrada |
-| Software | `src.ai.train`, `src.ai.serve` | Docker (PostgreSQL 16, InfluxDB 2.7), ingesta, API | Dashboard React |
+| Software | `src.ai.train`, `src.ai.serve` | Docker (PostgreSQL 16, InfluxDB 2.7, api, scheduler) | Dashboard React |
 | Grupos uv | `ai` + `ai-cuda` | `ai` + `ai-cpu` + `dev` | ninguno (usa Node) |
 
 Dos reglas de las que no se aparta nada de lo que sigue, ambas de `AGENTS.md` §15:
@@ -417,16 +417,78 @@ Marcado en `docs/backlog.md` como **no verificado**, no como incumplido:
   `ReadWritePaths` correctos.
 - Que el timer dispare a la hora prevista y `promote.sh` complete el ciclo con
   rollback.
-- El rendimiento del ciclo completo (RNF-003), que se re-mide al cierre del
-  Sprint 3.
+- El rendimiento del ciclo completo (RNF-003): re-medido en la Fase B1 con
+  4 de sus 5 componentes (p95 **117 ms** «en el servidor local», ver
+  `scripts/bench_rnf003.py` y `docs/backlog.md`). Cierra al final de la
+  Fase B2, cuando exista y se mida la actualización de la interfaz.
 
 ---
 
-## 11. Qué queda fuera (Fase B y Sprint 4)
+## 11. Backend de M2 en Docker (api + scheduler)
+
+Sprint 3, Fase B1. El `docker-compose.yml` levanta **cuatro** contenedores:
+`postgres`, `influxdb`, `api` y `scheduler`. Los dos últimos comparten imagen
+(`Dockerfile.backend`): la construye `uv` sobre `uv.lock` con el grupo `ai`
+(fastapi + uvicorn) y **sin torch** — en M2 el modelo no corre, solo se pide
+inferencia a M1 por HTTP. Verificado en la construcción: 424 MB y
+`importlib.find_spec('torch')` → `None`.
+
+```bash
+docker compose up -d --build      # todo, incluida la imagen del backend
+docker compose ps                 # api healthy; scheduler sin healthcheck (a propósito)
+docker compose logs -f scheduler  # un ciclo cada 5 minutos
+curl -sf http://127.0.0.1:8010/api/health
+```
+
+### Por qué `network_mode: host` (y no la red por puentes)
+
+`api` y `scheduler` corren en la red del host, y no es un apaño:
+
+1. En M2 todo —bases incluidas— está en **la misma máquina**, así que la red
+   que necesitan es la del propio host, y las bases ya publican SOLO loopback
+   (REST-05): `127.0.0.1:5432` y `127.0.0.1:8086` se alcanzan igual.
+2. Con red host el `.env` funciona **sin sobrescribir nada**: `PGHOST`,
+   `INFLUXDB_URL`, `ENDPOINTS_*` e `INFERENCE_URL` salen todos del entorno
+   tal cual (`AGENTS.md` §15.1). Con la red por puentes haría falta
+   `PGHOST=postgres` y compañía, que es otra configuración por entorno.
+3. En desarrollo se confirmó que el firewall del host bloquea el tráfico del
+   puente docker hacia el propio host (connect timeout desde el contenedor
+   hacia un servicio del host): con red host el camino es el loopback y no
+   depende de esa regla.
+
+### Variables que importan aquí
+
+- `.env` (gitignored): credenciales de bases y de Twelve Data. Plantilla en
+  `.env.m2.example`.
+- `.env.local` (gitignored, permiso 600): `CREDENTIALS_MASTER_KEY` (para
+  descifrar la API key) e `INFERENCE_URL`. La clave maestra vive **aparte**
+  de `.env` a propósito: nunca con los secretos que ella misma descifra.
+- En despliegue real, `INFERENCE_URL` apunta a la **IP interna de M1**; el
+  valor por defecto `http://127.0.0.1:8000` es para desarrollo con M1 en la
+  misma máquina.
+
+### Qué hace cada contenedor
+
+- **api** — `python -m src.endpoints`, en `127.0.0.1:8010`
+  (`ENDPOINTS_HOST`/`ENDPOINTS_PORT`), con healthcheck HTTP sobre
+  `/api/health` (que **no** toca PG ni Influx: lo que pasa con ellos lo dice
+  `/api/status`, que lo traduce a AMARILLO con su causa).
+- **scheduler** — `python -m src.ingestion.scheduler`, sin puertos ni
+  healthcheck (no escucha ni expone endpoint; su señal de vida es el log de
+  cada ciclo). Siembra la configuración inicial al arrancar y sobrevive a
+  fallos transitorios de red, PG, Influx o M1.
+
+La API de esta fase es **SOLO GET y sin autenticación** (CR-004): login,
+roles, escrituras y Kill-Switch llegan en el Sprint 4.
+
+---
+
+## 12. Qué queda fuera (Fase B2 y Sprint 4)
 
 No forma parte de este despliegue:
 
-- La API de M2 para el dashboard, el dashboard y la integración con la UI.
+- El dashboard de la Fase B2 y su integración con la UI (la API que consume
+  ya existe, en §11).
 - El Kill-switch, la auditoría, las notificaciones y la integración con
   Interactive Brokers.
 - **RF-801**: el runbook de mitigación de fallos de IB para el operador.
@@ -435,7 +497,7 @@ No forma parte de este despliegue:
 
 ---
 
-## 12. Referencias
+## 13. Referencias
 
 - `AGENTS.md` §15 — modelo de desarrollo y despliegue (fuente de las reglas que
   este documento aplica).
