@@ -10,9 +10,9 @@ web
 
 Audiencia interna única de RiTech SAS, en una sola terminal (Máquina 3, Windows 11):
 
-- **Operador** (rol `OPERATOR`, persona: Dylan Merchancano): vive la interfaz durante la jornada bursátil. Su trabajo: monitorear las predicciones de la IA local, evaluar el ratio de confianza y la explicación (XAI), decidir y ejecutar órdenes en Modo Asesor, o supervisar la ejecución automática en Modo Autónomo, y disparar el Kill-Switch ante pérdidas severas.
+- **Operador de Inversiones** (rol `OPERATOR`, persona: la Secretaria/traders del cliente, SRS §2.2 — sin nombre propio en los requisitos): vive la interfaz durante la jornada bursátil. Su trabajo: usar el Modo Asesor, monitorear las predicciones de la IA local, evaluar el ratio de confianza y la explicación (XAI), ejecutar órdenes manuales y recibir alertas; tiene el privilegio de activar el Kill-Switch ante emergencias. **No es trader profesional**, así que la interfaz le habla en lenguaje llano («Sistema normal», «Atención: la IA no responde», «Mercado cerrado») siempre con texto + icono; la terminología técnica (macro-F1, etc.) queda solo en el panel de detalle.
 - **Gerente General** (rol `GERENTE`, persona: Aida Liliana Rosero Ruiz): misma terminal, con autoridad exclusiva para habilitar el Modo Autónomo (OTP) y definir los perfiles de riesgo.
-- Rol secundario confirmado: **Administrador de TI** (`ADMIN_TI`, persona: Javier Martínez): restablece el sistema tras un Kill-Switch y administra la configuración; no es usuario diario de la interfaz de trading.
+- Rol secundario confirmado: **Administrador de TI** (`ADMIN_TI`, persona: Dylan Merchancano, SRS §2.2): configuración de red, backups, despliegue y restablecimiento tras un Kill-Switch; acceso total al sistema, pero no es usuario diario de la interfaz de trading.
 
 Situación: monitoreo activo dentro del horario extendido de mercado (4:00 AM–8:00 PM EST, L–V), a menudo en momentos de alta volatilidad (apertura/cierre). El producto reemplaza un proceso 100% manual (una persona vigilando precios visualmente).
 

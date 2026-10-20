@@ -49,3 +49,9 @@ models/
 # trabajo descartable de la sesión, no un entregable (decisión D1 del plan B1).
 # Fuera del bloque de arriba a propósito: `impeccable update` lo reescribe.
 .impeccable/mocks/
+
+# Artefactos de trabajo de Impeccable (solo se versiona surfaces/)
+.impeccable/questions/
+.impeccable/mocks/
+.impeccable/build/
+.impeccable/review/
