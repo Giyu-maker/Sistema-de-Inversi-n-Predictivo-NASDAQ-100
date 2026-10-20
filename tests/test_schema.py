@@ -39,14 +39,19 @@ class TestIdempotencia:
         assert sin_guardia == [], f"tablas sin IF NOT EXISTS: {sin_guardia}"
 
     def test_todos_los_indices_declaran_if_not_exists(self) -> None:
-        sin_guardia = re.findall(r"CREATE INDEX\s+(?!IF NOT EXISTS)(\w+)", SQL)
+        # `CREATE UNIQUE INDEX` es un índice también: sin el `(?:UNIQUE )?` la
+        # regla dejaría pasar al único que más fácil sería escribir mal.
+        sin_guardia = re.findall(r"CREATE (?:UNIQUE )?INDEX\s+(?!IF NOT EXISTS)(\w+)", SQL)
         assert sin_guardia == [], f"índices sin IF NOT EXISTS: {sin_guardia}"
-        assert len(re.findall(r"CREATE INDEX IF NOT EXISTS", SQL)) == 5
+        assert len(re.findall(r"CREATE (?:UNIQUE )?INDEX IF NOT EXISTS", SQL)) == 5
 
     def test_no_hay_sentencias_destructivas(self) -> None:
         # DROP/TRUNCATE/ALTER ... CASCADE vaciarían la auditoría de 5 años.
+        # Se protegen TABLAS: `DROP INDEX IF EXISTS` (D2, retirada del índice
+        # no único absorbido por el único) no toca datos y debe poder existir.
         destructivas = re.findall(
-            r"\b(DROP|TRUNCATE|ALTER\s+TABLE\s+\w+\s+COLUMN)\b", SQL, flags=re.I
+            r"\b(DROP\s+TABLE|DROP\s+SCHEMA|TRUNCATE|ALTER\s+TABLE\s+\w+\s+COLUMN)\b",
+            SQL, flags=re.I,
         )
         assert destructivas == [], f"sentencias destructivas: {destructivas}"
 
@@ -124,9 +129,19 @@ class TestOtrasTablas:
         assert re.search(r"max_loss_day\s+DECIMAL\(5,\s*2\)\s+NOT NULL DEFAULT 1\.25", SQL)
 
     def test_los_indices_cubren_los_filtrados_del_dashboard(self) -> None:
-        for indice in ("idx_ai_predictions_time", "idx_transactions_time",
-                       "idx_audit_logs_time", "idx_audit_logs_action"):
+        for indice in ("idx_transactions_time", "idx_audit_logs_time",
+                       "idx_audit_logs_action"):
             assert f"CREATE INDEX IF NOT EXISTS {indice}" in SQL
+
+    def test_prediction_time_es_unico_por_vela(self) -> None:
+        # D2: una sola predicción por vela. Es lo que hace seguro el
+        # insert-if-absent del ciclo y lo que permite derivar el "resultado
+        # real" sin temer filas repetidas tras un reinicio del scheduler.
+        assert "CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_predictions_time" in SQL
+        assert "ON ai_predictions (prediction_time)" in SQL
+        # El índice no único del Sprint 2 queda absorbido, no duplicado.
+        assert "DROP INDEX IF EXISTS idx_ai_predictions_time" in SQL
+        assert "CREATE INDEX IF NOT EXISTS idx_ai_predictions_time" not in SQL
 
 
 class TestAplicacionViva:

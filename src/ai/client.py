@@ -100,6 +100,15 @@ class InferenceClient:
         """`GET /health`. Devuelve el cuerpo tal cual, para inspección."""
         return self._get("/health")
 
+    def modelo(self) -> dict[str, Any]:
+        """`GET /modelo` — métricas del artefacto que sirve M1 (nota de calidad).
+
+        La UI debe mostrar siempre cuándo se entrenó el modelo y con qué
+        resultado (informe Sprint 3 §10). No es parte del ciclo de decisión:
+        es transparencia, y por eso su error tampoco detiene la predicción.
+        """
+        return self._get("/modelo")
+
     def verificar_esquema(self) -> str:
         """Comprueba que M1 sirve un modelo entrenado con nuestro mismo esquema.
 

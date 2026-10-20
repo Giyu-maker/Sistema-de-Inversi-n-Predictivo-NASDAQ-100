@@ -77,12 +77,21 @@ CREATE TABLE IF NOT EXISTS ai_predictions (
         CHECK (length(btrim(technical_rationale)) > 0)
 );
 
-CREATE INDEX IF NOT EXISTS idx_ai_predictions_time
-    ON ai_predictions (prediction_time DESC);
+-- Un índice ÚNICO (y no uno simple): el ciclo solo puede escribir UNA predicción
+-- por vela, y `prediction_time` es el cierre de la última vela de la ventana, no
+-- el reloj (decisión D2): es determinista, sobrevive a un reinicio del scheduler
+-- y es lo que permite el `ON CONFLICT` de insert-if-absent y calcular después el
+-- "resultado real". El índice no único del Sprint 2 (`idx_ai_predictions_time`)
+-- queda absorbido: se retira con IF EXISTS para no dejar duplicado en la BD ya
+-- aplicada.
+DROP INDEX IF EXISTS idx_ai_predictions_time;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_predictions_time
+    ON ai_predictions (prediction_time);
 
 COMMENT ON TABLE  ai_predictions IS 'Predicciones persistidas por M2 desde el cliente de inferencia; M1 no escribe en PostgreSQL.';
-COMMENT ON COLUMN ai_predictions.prediction_time IS 'Epoch ms del cierre de la ventana de 12 velas usada para decidir.';
-COMMENT ON COLUMN ai_predictions.confidence_score IS 'Probabilidad softmax de la clase ganadora (0.0000 a 1.0000).';
+COMMENT ON COLUMN ai_predictions.prediction_time IS 'Epoch ms del cierre de la ÚLTIMA VELA de la ventana de 12 usada para decidir (no el reloj).';
+COMMENT ON COLUMN ai_predictions.confidence_score IS 'Posterior corregido por prior (0.0000 a 1.0000), NO la softmax cruda — ver src/ai/client.py.';
 COMMENT ON COLUMN ai_predictions.technical_rationale IS 'Atribución XAI en lenguaje financiero (RF-303). NO es una causalidad de mercado.';
 
 

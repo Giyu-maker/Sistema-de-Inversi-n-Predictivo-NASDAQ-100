@@ -37,6 +37,8 @@ Corre con el grupo `ai` (torch). El cliente de M2, en cambio, no lo necesita.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import time
 from contextlib import asynccontextmanager
@@ -55,6 +57,9 @@ from src.ai.model import (
     LocalPredictiveModel,
     ruta_desde_puntero,
 )
+from src.utils.fechas import fecha_hora
+
+logger = logging.getLogger(__name__)
 
 #: Ventana de features que admite el servicio. Es la misma constante que usa el
 #: entrenamiento; se redeclara aquí solo para el mensaje de error.
@@ -308,6 +313,201 @@ def predecir(ventana: VentanaFeatures, request: Request) -> PrediccionSalida:
         model_type=modelo.model_type,
         stable_band_pct=modelo.stable_band_pct,
         generado_en_ms=int(time.time() * 1000),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /modelo — métricas del artefacto para la nota de calidad (decisión D5)
+# ---------------------------------------------------------------------------
+
+#: Declaran de dónde sale el acierto direccional. La UI muestra el número con
+#: su fuente: no es lo mismo un dato medido que uno derivado.
+FUENTE_INFORME = "informe_entrenamiento"
+FUENTE_MATRIZ = "derivado_de_matriz_confusion"
+FUENTE_NINGUNA = "no_disponible"
+
+
+class AciertoDireccional(BaseModel):
+    """Acierto direccional de test + su procedencia (informe Sprint 3 §10)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ratio: float | None
+    n: int | None
+    aciertos: int | None
+    ic_95: list[float] | None
+    fuente: Literal[
+        "informe_entrenamiento", "derivado_de_matriz_confusion", "no_disponible"
+    ]
+    #: False = el intervalo del 95 % incluye el 50 %, es decir, sin ventaja
+    #: demostrada. None cuando no hay intervalo con qué afirmarlo.
+    ventaja_demostrada: bool | None
+
+
+class ModeloSalida(BaseModel):
+    """Lo que el dashboard necesita para su nota permanente de calidad."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model_type: str
+    feature_schema_version: str
+    ventana: int
+    horizonte: int
+    banda_stable_pct: float
+    entrenado_en_ms: int
+    entrenado_en: str
+    dispositivo_entrenamiento: str
+    macro_f1_test: float | None
+    acierto_direccional: AciertoDireccional
+    nota: str
+
+
+def _ruta_informe(modelo: LocalPredictiveModel) -> Path | None:
+    """`models/x.pt` → `models/x.metrics.json` si existe junto a él.
+
+    Convención de `src/ai/train.py`: el informe completo se escribe con el mismo
+    nombre y sufijo `.metrics.json`. El acierto direccional está allí y no en el
+    artefacto.
+    """
+    informe = Path(modelo.model_path).with_suffix(".metrics.json")
+    return informe if informe.is_file() else None
+
+
+def _cargar_informe(ruta: Path | None) -> dict[str, Any]:
+    if ruta is None:
+        return {}
+    try:
+        dato = json.loads(ruta.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        # Un informe ilegible no puede tumbar el servicio: la nota dirá «no
+        # disponible» en lugar de inventar métricas.
+        logger.warning("Informe de métricas ilegible (%s): %s", ruta, exc)
+        return {}
+    return dato if isinstance(dato, dict) else {}
+
+
+def _acierto_desde_matriz(matriz: Any) -> tuple[float, int, int] | None:
+    """Acierto direccional derivado de la matriz de confusión, sin reentrenar.
+
+    Mismas reglas que `src.ai.metrics.acierto_direccional`: solo cuentan los
+    casos en los que la verdad Y la predicción son UP o DOWN; las STABLE se
+    descartan de los dos lados, porque si el modelo dice «no pasa nada» y no
+    pasó nada, eso no acredita que sepa hacia dónde se va el mercado.
+
+    Verificado contra el informe del Sprint 3: sobre la matriz del MLP
+    `[[253,300,301],[488,2262,495],[292,307,279]]` devuelve 532/1125 = 0,4728,
+    exactamente el `acierto_direccional_test.ratio` del informe.
+    """
+    indices = {nombre: indice for indice, nombre in LABEL_NAMES.items()}
+    try:
+        down, up = indices["DOWN"], indices["UP"]
+        filas = list(matriz)
+        n = filas[down][down] + filas[down][up] + filas[up][down] + filas[up][up]
+        aciertos = filas[down][down] + filas[up][up]
+    except (IndexError, KeyError, TypeError):
+        return None
+    if n <= 0:
+        return None
+    return float(aciertos) / float(n), int(n), int(aciertos)
+
+
+def _acierto_direccional(
+    modelo: LocalPredictiveModel, informe: dict[str, Any]
+) -> AciertoDireccional:
+    """El número de acierto direccional, con su fuente declarada.
+
+    El informe del Sprint 3 lo calcula sobre las predicciones del **MLP**, así
+    que solo sirve cuando el artefacto activo ES el MLP. En el modelo lineal se
+    deriva de la matriz de confusión de ese modelo, que sí está en el informe.
+    Ninguna de las dos rutas reentrena (D5).
+    """
+    if modelo.model_type == "mlp":
+        dato = informe.get("acierto_direccional_test") or {}
+        if dato.get("n"):
+            ic = dato.get("ic_95")
+            return AciertoDireccional(
+                ratio=float(dato["ratio"]),
+                n=int(dato["n"]),
+                aciertos=int(dato.get("aciertos") or 0),
+                ic_95=[float(v) for v in ic] if ic else None,
+                fuente=FUENTE_INFORME,
+                ventaja_demostrada=(
+                    None if not ic else not (float(ic[0]) <= 0.5 <= float(ic[1]))
+                ),
+            )
+    llave = "lineal" if modelo.model_type == "linear" else modelo.model_type
+    matriz = (
+        ((informe.get("metricas") or {}).get("test") or {})
+        .get(llave, {})
+        .get("confusion")
+    )
+    derivado = _acierto_desde_matriz(matriz)
+    if derivado is None:
+        return AciertoDireccional(
+            ratio=None,
+            n=None,
+            aciertos=None,
+            ic_95=None,
+            fuente=FUENTE_NINGUNA,
+            ventaja_demostrada=None,
+        )
+    ratio, n, aciertos = derivado
+    return AciertoDireccional(
+        ratio=ratio,
+        n=n,
+        aciertos=aciertos,
+        ic_95=None,
+        fuente=FUENTE_MATRIZ,
+        ventaja_demostrada=None,
+    )
+
+
+def _nota(acierto: AciertoDireccional, entrenado_en: str) -> str:
+    """Texto que la UI mostrará junto al modelo, sin adornos."""
+    if acierto.ratio is None:
+        base = "Sin acierto direccional disponible para este artefacto."
+    else:
+        base = (
+            f"Acierto direccional de test: {acierto.ratio * 100:.1f} % sobre "
+            f"{acierto.n} casos con dirección que acertar."
+        )
+        if acierto.ventaja_demostrada is False:
+            base += (
+                " El intervalo del 95 % incluye el 50 %: sin ventaja "
+                "direccional demostrada."
+            )
+    return (
+        f"{base} Entrenado el {entrenado_en}. Modelo local de RiTech SAS: la "
+        "interfaz no emite órdenes de compra ni de venta, solo tendencia con "
+        "su nivel de confianza."
+    )
+
+
+@app.get("/modelo", response_model=ModeloSalida, tags=["modelo"])
+def modelo_metrics(request: Request) -> ModeloSalida:
+    """Métricas del artefacto cargado para la nota de calidad del dashboard.
+
+    No reentrena ni recalcula: expone lo que el entrenamiento dejó escrito,
+    con la fuente de cada número. `/health` sigue siendo solo de vida (D5).
+    """
+    modelo = _modelo(request)
+    informe = _cargar_informe(_ruta_informe(modelo))
+    macro = modelo.metrics.get("macro_f1_test")
+    entrenado_ms = int(modelo.artifact.get("trained_at_ms") or 0)
+    entrenado_en = fecha_hora(entrenado_ms)
+    acierto = _acierto_direccional(modelo, informe)
+    return ModeloSalida(
+        model_type=modelo.model_type,
+        feature_schema_version=modelo.feature_schema_version,
+        ventana=int(modelo.window),
+        horizonte=int(modelo.horizon),
+        banda_stable_pct=float(modelo.stable_band_pct),
+        entrenado_en_ms=entrenado_ms,
+        entrenado_en=entrenado_en,
+        dispositivo_entrenamiento=str(modelo.artifact.get("training_device", "")),
+        macro_f1_test=float(macro) if macro is not None else None,
+        acierto_direccional=acierto,
+        nota=_nota(acierto, entrenado_en),
     )
 
 

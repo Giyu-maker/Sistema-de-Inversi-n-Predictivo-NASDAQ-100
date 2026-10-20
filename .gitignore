@@ -44,3 +44,8 @@ models/
 **/.impeccable/live/deferred-svelte-component-accepts.json
 **/.impeccable/live/*.png
 # impeccable-ignore-end
+
+# Bocetos de las rondas de decisión de `impeccable shape`: son material de
+# trabajo descartable de la sesión, no un entregable (decisión D1 del plan B1).
+# Fuera del bloque de arriba a propósito: `impeccable update` lo reescribe.
+.impeccable/mocks/

@@ -14,6 +14,15 @@ dependencies = [
     "influxdb-client>=1.40",
     "numpy>=2",
     "pydantic>=2.7",
+    # Zonas horarias para `zoneinfo`: la imagen python:3.12-slim no garantiza
+    # /usr/share/zoneinfo y sin él «hora de Nueva York» explotaría al importar.
+    "tzdata>=2024",
+    # PostgreSQL. `psycopg2-binary` y no `psycopg2` (que exige compilar contra
+    # libpq-dev): la imagen `python:3.12-slim` del servicio de M2 no trae
+    # cabeceras y el binario reparte el libpq empaquetado (decisión D9).
+    # Síncrono a propósito: se escribe una fila de predicción cada
+    # 5 minutos y un pool de conexiones no se paga (§15).
+    "psycopg2-binary>=2.9",
     # `torch` NO va aquí. Vive en los grupos `ai-cpu` / `ai-cuda` abajo: la
     # Máquina 1 instala el de CUDA y la Máquina 2 el de CPU, y una misma
     # instalación no puede llevar las dos ruedas. Ver `docs/despliegue.md` §3.
