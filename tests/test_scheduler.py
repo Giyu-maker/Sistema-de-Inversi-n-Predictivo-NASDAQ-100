@@ -9,6 +9,8 @@ import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
+
 from src.ingestion.engine import parse_raw_candle
 from src.ingestion.scheduler import IngestionScheduler, _sorted_candles, _variation_pct
 
@@ -117,3 +119,58 @@ def test_sorted_candles_ordena_por_timestamp_no_por_insercion() -> None:
 
 def test_variation_pct_calcula_bien_entre_cierres() -> None:
     assert _variation_pct(101.0, 102.0) == (((102.0 - 101.0) / 101.0) * 100)
+
+
+# ---------------------------------------------------------------------------
+# main() — el arranque real del scheduler en M2
+# ---------------------------------------------------------------------------
+
+
+class _ConfiguracionesDePrueba:
+    """Repositorio estricto, sin atributos inventados.
+
+    Con un `Mock` el typo `seembrar_inicial` del Sprint 3 habría pasado
+    inadvertido (un Mock fabrica cualquier atributo), y ese typo dejó la
+    siembra de `system_configurations` sin ejecutar en el primer arranque
+    real de un contenedor nuevo: solo un ERROR en el log.
+    """
+
+    def __init__(self) -> None:
+        self.sembradas = 0
+
+    def sembrar_inicial(self) -> bool:
+        self.sembradas += 1
+        return True
+
+
+def test_main_siembra_la_configuracion_y_arranca_el_ciclo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.ingestion import scheduler as mod_sched
+
+    monkeypatch.setenv("TWELVE_DATA_API_KEY_ENC", "cualquier-cifrado")
+    monkeypatch.setenv("CREDENTIALS_MASTER_KEY", "00" * 32)
+    monkeypatch.setenv("INFLUXDB_ADMIN_TOKEN", "token-falso")
+
+    configuraciones = _ConfiguracionesDePrueba()
+    scheduler_falso = Mock()
+    scheduler_falso.return_value.run = AsyncMock()
+
+    monkeypatch.setattr("src.security.crypto.decrypt_secret", lambda valor: "clave")
+    monkeypatch.setattr("influxdb_client.InfluxDBClient", Mock(return_value=Mock()))
+    monkeypatch.setattr(
+        "src.database.configuraciones.ConfiguracionesPostgres",
+        Mock(return_value=configuraciones),
+    )
+    monkeypatch.setattr("src.database.influx_lectura.LectorInflux", Mock())
+    monkeypatch.setattr("src.database.predictions.PrediccionesPostgres", Mock())
+    monkeypatch.setattr(mod_sched, "IngestionEngine", Mock())
+    monkeypatch.setattr(mod_sched, "InferenceClient", Mock())
+    monkeypatch.setattr(mod_sched, "IngestionScheduler", scheduler_falso)
+
+    mod_sched.main()
+
+    # La siembra es lo que garantiza la fila única de system_configurations
+    # (D3): tiene que ejecutarse, no solo intentarse.
+    assert configuraciones.sembradas == 1
+    scheduler_falso.return_value.run.assert_awaited_once()

@@ -187,7 +187,7 @@ def main() -> None:
     # no hay configuración y se usarán los valores por defecto.
     configuraciones = ConfiguracionesPostgres()
     try:
-        if configuraciones.seembrar_inicial():
+        if configuraciones.sembrar_inicial():
             logger.info(
                 "Configuración inicial sembrada: Modo Asesor, perfil MODERATE "
                 "(umbral 0,75), límite de pérdida 1,25%%."

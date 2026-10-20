@@ -1,0 +1,42 @@
+# Contexto de build del backend — todo lo que NO es código de producción.
+# Subir .venv/ (GB) o models/ al daemon de Docker es la forma más rápida de
+# convertir un deploy en un calvario, y ninguno de los dos va en la imagen.
+
+# Entornos y cachés
+.venv/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Git y configuración local
+.git/
+.gitignore
+
+# Secretos: en docker-compose llegan por env_file, NUNCA por la imagen.
+.env
+.env.*
+!.env.example
+
+# Artefactos de IA (M1) y datos locales
+models/
+*.pt
+
+# Pruebas y documentación: no se ejecutan dentro del contenedor
+tests/
+docs/
+scripts/
+
+# Frontend e instalación de herramientas (Fase B): nada de esto corre en M2
+node_modules/
+dist/
+.agents/
+.opencode/
+.impeccable/
+skills-lock.json
+AGENTS.md
+PRODUCT.md
+
+# Despliegue por unidad systemd: aplica a M1 (fuera de esta imagen)
+deploy/

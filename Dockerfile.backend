@@ -1,0 +1,45 @@
+# syntax=docker/dockerfile:1
+# RiTech-NASDAQ100 — imagen del backend de M2: API de solo lectura + scheduler.
+#
+# Una sola imagen para los dos servicios de M2: cambia el comando, no el
+# entorno. Y una decisión que no se negocia: esta imagen NO lleva `torch`.
+# En M2 solo se ingesta, se consulta y se pide inferencia a M1 por HTTP; el
+# modelo nunca corre aquí (AGENTS.md §15.3 — `torch` solo en los grupos
+# `ai-cpu`/`ai-cuda`, y este build pide únicamente `ai`, que es fastapi +
+# uvicorn). Si esta imagen llega a pesar cientos de MB, alguien añadió torch.
+
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    UV_NO_CACHE=1 \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/opt/venv
+
+# uv con versión fijada: el lockfile decide las dependencias y la versión del
+# instalador también debe ser reproducible. En la imagen oficial el binario
+# está en la raíz.
+COPY --from=ghcr.io/astral-sh/uv:0.12.23 /uv /uvx /usr/local/bin/
+
+WORKDIR /app
+
+# 1) Dependencias primero: cambian menos que el código, así un deploy de solo
+#    código reutiliza la caché de esta capa. `--frozen` = exactamente lo que
+#    dice uv.lock, sin resolver nada en la imagen; `--no-install-project` no
+#    hace falta instalar el proyecto todavía (no es un paquete con build
+#    system), pero explícito aquí documenta que el orden importa.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --group ai
+
+# 2) El código. El `.dockerignore` se encarga de que no entre ni .venv, ni
+#    models/, ni .env (los secretos llegan por env_file en docker-compose).
+COPY src ./src
+
+# El venv de uv queda en /opt/venv (UV_PROJECT_ENVIRONMENT): sin esto en el
+# PATH, `python` sigue siendo el de la imagen y el servicio arranca sin ni
+# fastapi. Se comprueba con `docker compose run --rm api python -c ...`.
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Comando por defecto: la API. El scheduler lo sobrescribe en docker-compose
+# con `python -m src.ingestion.scheduler`.
+CMD ["python", "-m", "src.endpoints"]

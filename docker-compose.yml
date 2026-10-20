@@ -1,7 +1,9 @@
-# RiTech-NASDAQ100 — Infraestructura de datos (Sprint 2, Ítem 4)
-# Máquina 2 (Nodo Central): PostgreSQL 16 (relacional/auditoría) + InfluxDB 2.7 (velas 5M).
-# Levanta ambas bases con: docker compose up -d  (requiere Docker en la Máquina 2)
-# Los valores secretos salen de .env (no commiteado; plantilla en .env.example).
+# RiTech-NASDAQ100 — Infraestructura de la Máquina 2 (Nodo Central)
+#   Sprint 2, Ítem 4 : PostgreSQL 16 (relacional/auditoría) + InfluxDB 2.7 (velas 5M)
+#   Sprint 3, Fase B : `api` (API de solo lectura) + `scheduler` (ciclo de 5 min)
+# Todo junto: docker compose up -d --build   (requiere Docker en la Máquina 2)
+# Los valores secretos salen de .env (no commiteado; plantilla en .env.m2.example),
+# y la clave maestra de criptografía de .env.local (gitignored, permiso 600).
 
 services:
   postgres:
@@ -48,6 +50,95 @@ services:
       retries: 5
       start_period: 30s
 
+  # ---------------------------------------------------------------------------
+  # Sprint 3, Fase B — backend de M2 (imagen única: Dockerfile.backend)
+  # ---------------------------------------------------------------------------
+
+  # API de SOLO GET que consumirá el dashboard (M3). Sin login ni roles en esta
+  # fase (RNF-001/RNF-005 → Sprint 4) y sin ningún endpoint que escriba.
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: ritech-api
+    restart: unless-stopped
+    command: ["python", "-m", "src.endpoints"]
+    env_file:
+      - path: .env
+        required: true
+      # Desarrollo: CREDENTIALS_MASTER_KEY e INFERENCE_URL. En producción esta
+      # clave maestra se queda en este archivo aparte de .env, junto a la
+      # plantilla lo explica: nunca con los secretos que ella descifra.
+      - path: .env.local
+        required: false
+    environment:
+      # Topología de la red interna del compose: dentro de la red los servicios
+      # se llaman por su nombre. El .env NO cambia entre entornos (§15.1).
+      PGHOST: postgres
+      PGPORT: "5432"
+      INFLUXDB_URL: http://influxdb:8086
+      # Hay que bindear 0.0.0.0 dentro del contenedor para que el puerto
+      # publicado llegue; el host publica SOLO loopback (REST-05).
+      ENDPOINTS_HOST: 0.0.0.0
+      ENDPOINTS_PORT: "8000"
+      # M1 (inferencia): en despliegue lo decide .env (IP interna de M1); el
+      # valor por defecto es de DESARROLLO, donde M1 corre en el host y
+      # host.docker.internal lo resuelve vía host-gateway.
+      INFERENCE_URL: ${INFERENCE_URL:-http://host.docker.internal:8000}
+    ports:
+      # Solo loopback: el API no se expone a la intranet de la oficina.
+      - "127.0.0.1:8010:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+    healthcheck:
+      # /api/health no toca ni PG ni Influx: mide que el proceso HTTP
+      # responde, que es lo que quiere un healthcheck de contenedor. Lo que
+      # pasa con los servicios de abajo lo dice /api/status (amarillo).
+      test: ["CMD", "python", "-c",
+             "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # Ciclo de 5 minutos: Twelve Data → InfluxDB → inferencia en M1 →
+  # ai_predictions → AsymmetricCalculator. Sin puertos: no escucha, solo habla.
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: ritech-scheduler
+    restart: unless-stopped
+    command: ["python", "-m", "src.ingestion.scheduler"]
+    env_file:
+      - path: .env
+        required: true
+      - path: .env.local
+        required: false
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      INFLUXDB_URL: http://influxdb:8086
+      INFERENCE_URL: ${INFERENCE_URL:-http://host.docker.internal:8000}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+    # Sin healthcheck, deliberadamente: no expone ningún endpoint, y comprobar
+    # desde dentro del propio contenedor que "el proceso sigue vivo" no dice
+    # nada que `docker compose ps` y `restart: unless-stopped` no digan ya. Su
+    # señal de vida real es el log de cada ciclo de 5 minutos
+    # (`docker compose logs -f scheduler`), y sus efectos sobre los servicios
+    # los cuenta /api/status del contenedor api.
+
 volumes:
   pgdata:
     name: ritech-pgdata
@@ -59,17 +150,26 @@ volumes:
 # ============================================================================
 # VERIFICACIÓN EN MÁQUINA 2
 # ----------------------------------------------------------------------------
-# No hay Docker en la máquina de desarrollo: ejecutar estos comandos al
-# desplegar en la Máquina 2 (Nodo Central), desde la raíz del proyecto:
+# Desde la raíz del proyecto:
 #
-#   1. Levantar ambas bases:
-#        docker compose up -d
-#   2. Verificar estado (ambos contenedores deben quedar "healthy"):
+#   1. Construir y levantar todo:
+#        docker compose up -d --build
+#   2. Estado (los cuatro contenedores deben quedar "healthy" o "running";
+#      `scheduler` no declara healthcheck, ver su servicio):
 #        docker compose ps
 #   3. PostgreSQL responde:
 #        docker compose exec postgres pg_isready -U ritech -d ritech
 #   4. InfluxDB responde:
 #        curl -f http://127.0.0.1:8086/health
-#   5. Detener (los volúmenes persistentes conservan los datos):
+#   5. El API responde (solo loopback en el host):
+#        curl -f http://127.0.0.1:8010/api/health
+#        curl -s http://127.0.0.1:8010/api/status
+#   6. El ciclo corre cada 5 min:
+#        docker compose logs -f scheduler
+#   7. Detener (los volúmenes persistentes conservan los datos):
 #        docker compose down
+#
+# Si `api` o `scheduler` quedan "unhealthy"/reiniciándose, el primer sitio a
+# mirar es la plantilla de entorno: `.env` (faltan credenciales con `:?`) y
+# `.env.local` (CREDENTIALS_MASTER_KEY, permiso 600).
 # ============================================================================
