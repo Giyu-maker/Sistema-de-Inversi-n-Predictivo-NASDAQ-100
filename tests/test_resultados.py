@@ -151,12 +151,32 @@ class TestNoAplica:
         assert "fuera de la sesión" in resultado.motivo
 
     def test_la_vela_de_la_prediccion_no_esta_en_el_rango(self) -> None:
+        # Timestamp dos minutos por delante de una vela real: cae DENTRO del
+        # tramo de la sesión pero no coincide con ninguna vela, que es la rama
+        # «indice == -1» de la función.
         serie = _sesion(APERTURA_VIERNES, [500.0] * 78)
-        fuera = serie[0].timestamp + INTERVALO_MS * 500
+        entre_velas = serie[40].timestamp + 2 * 60 * 1000
         resultado = resultado_real(
-            fuera, _candles(serie), banda_pct=BANDA, ultima_vela_ms=serie[-1].timestamp
+            entre_velas,
+            _candles(serie),
+            banda_pct=BANDA,
+            ultima_vela_ms=serie[-1].timestamp,
         )
         assert resultado.estado == ESTADO_NO_APLICA
+        assert "no aparece en el rango" in resultado.motivo
+
+    def test_si_la_sesion_completa_no_esta_en_el_rango_no_aplica(self) -> None:
+        # El rango empieza a mitad de la sesión y la predicción es de antes:
+        # no hay forma de reconstruirla con esas velas.
+        serie = _sesion(APERTURA_VIERNES, [500.0] * 78)
+        resultado = resultado_real(
+            serie[30].timestamp,
+            _candles(serie[40:]),
+            banda_pct=BANDA,
+            ultima_vela_ms=serie[-1].timestamp,
+        )
+        assert resultado.estado == ESTADO_NO_APLICA
+        assert "la sesión de la predicción" in resultado.motivo
 
     def test_sin_velas_previas_no_se_puede_medir_el_retorno(self) -> None:
         # Rango que empieza en la propia predicción: no hay ventana de 12 velas

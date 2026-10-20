@@ -18,6 +18,7 @@ Y una cuarta, que debe fallar ruidosamente: que no haya modelo cargado.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,7 @@ from src.ai.model import (
     build_artifact,
     save_artifact,
 )
+from src.utils.fechas import fecha_hora
 
 N_FEATURES = len(FEATURE_NAMES)
 SEED = 20261017
@@ -326,3 +328,129 @@ class TestRutaDelArtefacto:
         with pytest.raises(RuntimeError, match="no se pudo cargar"):
             with TestClient(app):
                 pass
+
+
+# ---------------------------------------------------------------------------
+# /modelo — la nota de calidad del dashboard (D5)
+# ---------------------------------------------------------------------------
+
+_FORMATO_FECHA = re.compile(r"^\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2}$")
+
+#: Matriz real del primer entrenamiento: su derivado es 532/1125 (informe §10.3).
+MATRIZ_SPRINT3 = [[253, 300, 301], [488, 2262, 495], [292, 307, 279]]
+
+
+def _escribir_informe(artefacto: Path, contenido: dict) -> Path:
+    """El informe que `src.ai.train` deja junto al `.pt` (misma convención)."""
+    ruta = artefacto.with_suffix(".metrics.json")
+    ruta.write_text(json.dumps(contenido), encoding="utf-8")
+    return ruta
+
+
+class TestModelo:
+    """`GET /modelo`: expone lo entrenado, con su fuente, sin reentrenar.
+
+    Es lo que la interfaz pintará como nota permanente de calidad: por eso lo
+    que protege aquí es la **honestidad** de los números, no su valor.
+    """
+
+    def test_expone_solo_los_campos_del_contrato(self, cliente) -> None:
+        cuerpo = cliente.get("/modelo").json()
+        assert cliente.get("/modelo").status_code == 200
+        assert set(cuerpo) == {
+            "model_type", "feature_schema_version", "ventana", "horizonte",
+            "banda_stable_pct", "entrenado_en_ms", "entrenado_en",
+            "dispositivo_entrenamiento", "macro_f1_test",
+            "acierto_direccional", "nota",
+        }
+        assert cuerpo["model_type"] == "mlp"
+        assert cuerpo["ventana"] == WINDOW
+        assert cuerpo["horizonte"] == 3
+        assert cuerpo["banda_stable_pct"] == pytest.approx(0.10)
+        assert cuerpo["dispositivo_entrenamiento"] == "cpu"
+        assert cuerpo["entrenado_en"] == fecha_hora(cuerpo["entrenado_en_ms"])
+        assert _FORMATO_FECHA.match(cuerpo["entrenado_en"])
+        assert cuerpo["macro_f1_test"] is None  # el artefacto de prueba no trae métricas
+
+    def test_sin_informe_no_inventa_el_acierto(self, cliente) -> None:
+        """Sin `.metrics.json` junto al artefacto: `no_disponible`, ni un número."""
+        acierto = cliente.get("/modelo").json()["acierto_direccional"]
+        assert acierto["ratio"] is None
+        assert acierto["aciertos"] is None
+        assert acierto["fuente"] == "no_disponible"
+        assert acierto["ventaja_demostrada"] is None
+
+    def test_con_el_informe_del_sprint_3_usa_sus_numeros(self, cliente, artefacto: Path) -> None:
+        _escribir_informe(
+            artefacto,
+            {
+                "acierto_direccional_test": {
+                    "ratio": 0.4728888888888889,
+                    "n": 1125,
+                    "aciertos": 532,
+                    "ic_95": [0.4387, 0.5078],
+                }
+            },
+        )
+        cuerpo = cliente.get("/modelo").json()
+        acierto = cuerpo["acierto_direccional"]
+        assert acierto["ratio"] == pytest.approx(0.4728888888888889)
+        assert acierto["n"] == 1125
+        assert acierto["aciertos"] == 532
+        assert acierto["fuente"] == "informe_entrenamiento"
+        # El IC 95 [0,4387 ; 0,5078] incluye el 50 % → NO hay ventaja.
+        assert acierto["ventaja_demostrada"] is False
+        assert "sin ventaja direccional demostrada" in cuerpo["nota"]
+        assert "47.3 % sobre 1125 casos" in cuerpo["nota"]
+
+    def test_sin_acierto_en_el_informe_lo_deriva_de_la_matriz(
+            self, cliente, artefacto: Path) -> None:
+        """Segunda fuente (D5): matriz de confusión, sin reentrenar."""
+        _escribir_informe(
+            artefacto,
+            {"metricas": {"test": {"mlp": {"confusion": MATRIZ_SPRINT3}}}},
+        )
+        acierto = cliente.get("/modelo").json()["acierto_direccional"]
+        assert acierto["ratio"] == pytest.approx(532 / 1125)
+        assert acierto["n"] == 1125
+        assert acierto["aciertos"] == 532
+        assert acierto["fuente"] == "derivado_de_matriz_confusion"
+
+    def test_un_informe_ilegible_no_tumba_el_servicio(self, cliente, artefacto: Path) -> None:
+        artefacto.with_suffix(".metrics.json").write_text("{{{ no es json", encoding="utf-8")
+        respuesta = cliente.get("/modelo")
+
+        assert respuesta.status_code == 200
+        assert respuesta.json()["acierto_direccional"]["fuente"] == "no_disponible"
+
+    def test_un_ic_que_no_cruza_el_50_no_declara_ventaja(
+            self, cliente, artefacto: Path) -> None:
+        _escribir_informe(
+            artefacto,
+            {
+                "acierto_direccional_test": {
+                    "ratio": 0.58, "n": 200, "aciertos": 116,
+                    "ic_95": [0.51, 0.65],
+                }
+            },
+        )
+        cuerpo = cliente.get("/modelo").json()
+        assert cuerpo["acierto_direccional"]["ventaja_demostrada"] is True
+        assert "sin ventaja direccional demostrada" not in cuerpo["nota"]
+
+    def test_la_nota_nunca_promete_ordenes(self, cliente, artefacto: Path) -> None:
+        """Honestidad de UI: el endpoint describe tendencia, no acciones."""
+        _escribir_informe(
+            artefacto,
+            {
+                "acierto_direccional_test": {
+                    "ratio": 0.58, "n": 200, "aciertos": 116,
+                    "ic_95": [0.51, 0.65],
+                }
+            },
+        )
+        nota = cliente.get("/modelo").json()["nota"]
+
+        assert "no emite órdenes de compra ni de venta" in nota
+        assert "solo tendencia con" in nota
+        assert "Entrenado el" in nota

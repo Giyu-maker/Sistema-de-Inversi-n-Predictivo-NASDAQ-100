@@ -85,6 +85,7 @@ class LectorFalso:
         self.error = error
         self.consultas_ultimas: list[int] = []
         self.consultas_rango: list[tuple[int, int, str, int | None]] = []
+        self.consultas_ultima_vela = 0
 
     def ultimas_velas(self, n: int) -> list[NasdaqCandle]:
         self.consultas_ultimas.append(n)
@@ -102,6 +103,7 @@ class LectorFalso:
         return rango[:limit] if limit else rango
 
     def ultima_vela(self) -> NasdaqCandle | None:
+        self.consultas_ultima_vela += 1
         if self.error:
             raise self.error
         return self.velas[-1] if self.velas else None
@@ -180,7 +182,9 @@ class ClienteIaFalso:
         error: Exception | None = None,
     ) -> None:
         self.modelo_cargado = modelo_cargado
-        self.cuerpo_modelo = cuerpo_modelo or CUERPO_MODELO_EJEMPLO
+        # `None` = "sin cuerpo": un dict vacío es un cuerpo VACÍO y hay que
+        # poder pasarlo para probar una respuesta que no cumple el contrato.
+        self.cuerpo_modelo = CUERPO_MODELO_EJEMPLO if cuerpo_modelo is None else cuerpo_modelo
         self.error = error
         self.consultas_salud = 0
         self.consultas_modelo = 0

@@ -492,7 +492,10 @@ def modelo_metrics(request: Request) -> ModeloSalida:
     """
     modelo = _modelo(request)
     informe = _cargar_informe(_ruta_informe(modelo))
-    macro = modelo.metrics.get("macro_f1_test")
+    # `metrics` y `horizon` viven en el artefacto, no como atributos del
+    # modelo: leerlos de ahí es coherente con `trained_at_ms` y
+    # `training_device`, que ya se leen así justo debajo.
+    macro = (modelo.artifact.get("metrics") or {}).get("macro_f1_test")
     entrenado_ms = int(modelo.artifact.get("trained_at_ms") or 0)
     entrenado_en = fecha_hora(entrenado_ms)
     acierto = _acierto_direccional(modelo, informe)
@@ -500,7 +503,7 @@ def modelo_metrics(request: Request) -> ModeloSalida:
         model_type=modelo.model_type,
         feature_schema_version=modelo.feature_schema_version,
         ventana=int(modelo.window),
-        horizonte=int(modelo.horizon),
+        horizonte=int(modelo.artifact["horizon"]),
         banda_stable_pct=float(modelo.stable_band_pct),
         entrenado_en_ms=entrenado_ms,
         entrenado_en=entrenado_en,

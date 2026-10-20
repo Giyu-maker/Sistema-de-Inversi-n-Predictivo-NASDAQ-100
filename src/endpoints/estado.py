@@ -73,6 +73,15 @@ def status(estado: EstadoAplicacion = Depends(estado_app)) -> EstadoSistemaSalid
 
     ultima_vela, vela_error = _ultima_vela(estado)
     ultima_pred, error_pg = _ultima_prediccion(estado, vigente.postgres_ok)
+    if not vigente.postgres_ok and error_pg is None:
+        # La caída ya la detectó `configuracion_activa` al leer la configuración:
+        # aquí se recicla ese mensaje como CAUSA del estado, no solo como aviso.
+        # Sin la tabla no se puede saber si la última predicción es STABLE, y
+        # responder VERDE sería mentir.
+        error_pg = next(
+            (aviso for aviso in vigente.avisos if "PostgreSQL" in aviso),
+            "PostgreSQL no responde: no se pudo leer la última predicción.",
+        )
     ia = consultar_ia(estado)
 
     nombre_estado, motivo = _regla(

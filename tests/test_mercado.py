@@ -28,20 +28,25 @@ class TestHorarioRegular:
         assert estado.horario == "09:30-16:00 ET"
 
     @pytest.mark.parametrize(
-        "esperado,hora,minuto",
-        [
-            ((False, "apertura"), 9, 0),
-            ((True, "apertura"), 9, 30),
-            ((True, "cierre"), 15, 59),
-            ((False, "cierre"), 16, 0),
-            ((False, "cierre"), 17, 45),
-        ],
+        "hora,minuto,palabra",
+        [(9, 0, "apertura"), (16, 0, "cierre"), (17, 45, "cierre")],
     )
-    def test_los_limites_son_0930_y_1600(self, esperado, hora: int, minuto: int) -> None:
-        abierto, palabra = esperado
+    def test_fuera_de_limites_cierra_y_lo_dice(
+        self, hora: int, minuto: int, palabra: str
+    ) -> None:
         estado = mercado(_en_et(hora, minuto))
-        assert estado.abierto is abierto
+        assert estado.abierto is False
         assert palabra in estado.motivo
+
+    @pytest.mark.parametrize("hora,minuto", [(9, 30), (15, 59)])
+    def test_los_extremos_de_la_sesion_quedan_abiertos(
+        self, hora: int, minuto: int
+    ) -> None:
+        # 09:30 inclusive y 15:59 inclusive: la apertura cuenta y el último
+        # minuto antes del cierre también.
+        estado = mercado(_en_et(hora, minuto))
+        assert estado.abierto is True
+        assert estado.motivo == "Horario regular de mercado"
 
     @pytest.mark.parametrize("dia", [17, 18])  # sábado y domingo
     def test_fin_de_semana_cierra_el_estado(self, dia: int) -> None:
