@@ -53,43 +53,38 @@ services:
   # ---------------------------------------------------------------------------
   # Sprint 3, Fase B — backend de M2 (imagen única: Dockerfile.backend)
   # ---------------------------------------------------------------------------
+  # `network_mode: host` para api y scheduler, y NO es un apaño de desarrollo:
+  #
+  #  * En M2 todo (PostgreSQL, InfluxDB, api, scheduler) corre en LA MISMA
+  #    máquina, así que la red que necesitan es la del propio host. Los
+  #    contenedores de bases ya publican SOLO loopback (REST-05), y desde la
+  #    red del host se alcanzan igual: 127.0.0.1:5432 y 127.0.0.1:8086.
+  #  * Con esto el `.env` funciona SIN sobrescribir nada: PGHOST, INFLUXDB_URL,
+  #    ENDPOINTS_* e INFERENCE_URL salen todos del entorno tal cual (§15.1).
+  #    En la red por puentes haría falta `PGHOST=postgres` y compañía, que es
+  #    otra configuración por entorno.
+  #  * En desarrollo se confirmó que el firewall del host bloquea el tráfico
+  #    del puente docker hacia el propio host: con red host el camino es el
+  #    loopback y no depende de esa regla.
+  #
+  # El API sigue sin exponerse: `ENDPOINTS_HOST` por defecto es 127.0.0.1:8010.
 
-  # API de SOLO GET que consumirá el dashboard (M3). Sin login ni roles en esta
-  # fase (RNF-001/RNF-005 → Sprint 4) y sin ningún endpoint que escriba.
   api:
     build:
       context: .
       dockerfile: Dockerfile.backend
     container_name: ritech-api
     restart: unless-stopped
+    network_mode: host
     command: ["python", "-m", "src.endpoints"]
     env_file:
       - path: .env
         required: true
       # Desarrollo: CREDENTIALS_MASTER_KEY e INFERENCE_URL. En producción esta
-      # clave maestra se queda en este archivo aparte de .env, junto a la
-      # plantilla lo explica: nunca con los secretos que ella descifra.
+      # clave maestra se queda en este archivo aparte de .env (la plantilla lo
+      # explica): nunca junto a los secretos que ella descifra.
       - path: .env.local
         required: false
-    environment:
-      # Topología de la red interna del compose: dentro de la red los servicios
-      # se llaman por su nombre. El .env NO cambia entre entornos (§15.1).
-      PGHOST: postgres
-      PGPORT: "5432"
-      INFLUXDB_URL: http://influxdb:8086
-      # Hay que bindear 0.0.0.0 dentro del contenedor para que el puerto
-      # publicado llegue; el host publica SOLO loopback (REST-05).
-      ENDPOINTS_HOST: 0.0.0.0
-      ENDPOINTS_PORT: "8000"
-      # M1 (inferencia): en despliegue lo decide .env (IP interna de M1); el
-      # valor por defecto es de DESARROLLO, donde M1 corre en el host y
-      # host.docker.internal lo resuelve vía host-gateway.
-      INFERENCE_URL: ${INFERENCE_URL:-http://host.docker.internal:8000}
-    ports:
-      # Solo loopback: el API no se expone a la intranet de la oficina.
-      - "127.0.0.1:8010:8000"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
@@ -99,8 +94,7 @@ services:
       # /api/health no toca ni PG ni Influx: mide que el proceso HTTP
       # responde, que es lo que quiere un healthcheck de contenedor. Lo que
       # pasa con los servicios de abajo lo dice /api/status (amarillo).
-      test: ["CMD", "python", "-c",
-             "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      test: ["CMD-SHELL", "python -c \"import os, urllib.request as u; u.urlopen('http://127.0.0.1:' + os.environ.get('ENDPOINTS_PORT', '8010') + '/api/health', timeout=3)\""]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -114,19 +108,13 @@ services:
       dockerfile: Dockerfile.backend
     container_name: ritech-scheduler
     restart: unless-stopped
+    network_mode: host
     command: ["python", "-m", "src.ingestion.scheduler"]
     env_file:
       - path: .env
         required: true
       - path: .env.local
         required: false
-    environment:
-      PGHOST: postgres
-      PGPORT: "5432"
-      INFLUXDB_URL: http://influxdb:8086
-      INFERENCE_URL: ${INFERENCE_URL:-http://host.docker.internal:8000}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
