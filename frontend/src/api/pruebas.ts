@@ -13,6 +13,15 @@ import type { ReactNode } from 'react'
 /** Devuelve el cuerpo simulado de una ruta (`/api/status?x=1`), o `undefined`. */
 export type ResolutorPruebas = (ruta: string) => unknown | undefined
 
+/**
+ * Marca que un escenario devuelve para «la API dejó de responder»: el cliente
+ * la traduce al error de RED real («No se pudo contactar con el servidor.»),
+ * no al de contrato. Solo existe en desarrollo, como el resto del registro;
+ * `dist-sin-fixtures.test.mjs` sigue verificando que nada de esto llega a
+ * producción.
+ */
+export const RED_CAIDA = Symbol('api-caida')
+
 /** Pinta el banner del escenario: se ejecuta como función, no como componente. */
 export type PintarBanner = () => ReactNode
 

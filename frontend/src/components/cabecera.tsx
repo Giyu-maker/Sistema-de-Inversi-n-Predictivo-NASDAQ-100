@@ -162,15 +162,20 @@ export function Cabecera({ estado, fase, mensaje }: PropsCabecera) {
               className="relative h-1 w-32 rounded-full bg-muted"
               role="img"
               aria-label={
-                haySesionHoy
-                  ? estado?.mercado.abierto === true
-                    ? `Sesión en curso: faltan ${Math.floor(restantes / 60)} horas y ${restantes % 60} minutos para el cierre`
-                    : 'La sesión regular de hoy aún no comienza'
-                  : !posicion.diaUtil
-                    ? 'Hoy no hay sesión regular del mercado: fin de semana'
-                    : estado?.mercado.feriado === true
-                      ? 'Hoy no hay sesión regular del mercado: feriado'
-                      : 'La sesión regular de hoy ya terminó'
+                // El calendario (fin de semana/feriado) manda sobre el
+                // backend: el chip de estado no tiene por qué haber llegado.
+                !posicion.diaUtil
+                  ? 'Hoy no hay sesión regular del mercado: fin de semana'
+                  : estado?.mercado.feriado === true
+                    ? 'Hoy no hay sesión regular del mercado: feriado'
+                    : estado?.mercado.abierto === true
+                      ? `Sesión en curso: faltan ${Math.floor(restantes / 60)} horas y ${restantes % 60} minutos para el cierre`
+                      // Sin esto, de 16:00 a medianoche un lector de pantalla
+                      // oía «la sesión aún no comienza» con la sesión ya
+                      // terminada (`haySesionHoy` solo mira el día, no la hora).
+                      : posicion.minutos >= DURACION_SESION_MIN
+                        ? 'La sesión regular de hoy ya terminó'
+                        : 'La sesión regular de hoy aún no comienza'
               }
             >
               <div
@@ -186,7 +191,7 @@ export function Cabecera({ estado, fase, mensaje }: PropsCabecera) {
             </div>
             <span className="dato">16:00</span>
             <span>ET</span>
-            {estado?.mercado.abierto === true ? (
+            {haySesionHoy && estado?.mercado.abierto === true ? (
               <span>
                 · faltan{' '}
                 {restantes >= 60
@@ -196,17 +201,21 @@ export function Cabecera({ estado, fase, mensaje }: PropsCabecera) {
             ) : null}
           </div>
 
-          {/* Avisos: conviene saberlos, no deciden el estado (fuera del vivo). */}
+          {/* Avisos: conviene saberlos, no deciden el estado (fuera del vivo).
+              El texto va en un `span` encogible y cortapalabras: el mensaje de
+              red/503 puede traer una excepción larga sin espacios (break-ui B2.5). */}
           {estado?.avisos.map((aviso) => (
             <p key={aviso} className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <Info weight="bold" className="h-3.5 w-3.5 shrink-0" />
-              {aviso}
+              <span className="min-w-0 break-words">{aviso}</span>
             </p>
           ))}
           {avisoDeRed !== null ? (
             <p className="flex items-center gap-1.5 text-xs text-ambar-texto">
               <Warning weight="bold" className="h-3.5 w-3.5 shrink-0" />
-              {avisoDeRed} Mostrando el último dato recibido.
+              <span className="min-w-0 break-words">
+                {avisoDeRed} Mostrando el último dato recibido.
+              </span>
             </p>
           ) : null}
         </div>

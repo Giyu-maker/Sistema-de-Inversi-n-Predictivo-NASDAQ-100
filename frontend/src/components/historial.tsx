@@ -107,11 +107,14 @@ export function Historial({ historial }: PropsHistorial) {
       </div>
 
       {/* Avisos del backend (p. ej. precios históricos ilegibles): conviene
-          saberlos, no deciden nada. */}
+          saberlos, no deciden nada. Pueden traer una excepción larga con URLs
+          y sin espacios (replican el copy real de B1), así que el texto va en
+          un `span` que puede encoger y cortar palabras: sin esto se sale de la
+          tarjeta a 390 px (break-ui B2.5). */}
       {avisos.map((aviso) => (
         <p key={aviso} className="mt-2 flex items-start gap-1.5 text-xs text-muted-foreground">
           <Info weight="bold" className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-          {aviso}
+          <span className="min-w-0 break-words">{aviso}</span>
         </p>
       ))}
 
@@ -119,7 +122,9 @@ export function Historial({ historial }: PropsHistorial) {
         <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-ambar-texto">
           <p className="flex items-start gap-1.5">
             <Warning weight="bold" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-            {mensaje ?? 'No se pudo cargar el historial.'}
+            <span className="min-w-0 break-words">
+              {mensaje ?? 'No se pudo cargar el historial.'}
+            </span>
           </p>
           <button
             type="button"

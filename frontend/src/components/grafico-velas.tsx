@@ -236,7 +236,10 @@ export default function GraficoVelas({ velas, cargando, mensaje }: PropsGraficoV
       </div>
 
       {velas === null ? (
-        <p className="mt-4 text-sm text-muted-foreground">
+        // `break-words`: el mensaje puede ser un 503 con la excepción larga
+        // de InfluxDB sin espacios; sin cortar palabras se sale del bloque
+        // (break-ui B2.5).
+        <p className="mt-4 break-words text-sm text-muted-foreground">
           {cargando ? 'Cargando velas…' : (mensaje ?? 'No se pudo cargar el gráfico de velas.')}
         </p>
       ) : datos.length === 0 ? (

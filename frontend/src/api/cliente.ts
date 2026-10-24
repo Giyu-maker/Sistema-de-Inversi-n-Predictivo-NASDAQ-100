@@ -23,7 +23,7 @@
  */
 import type { ZodType } from 'zod'
 
-import { consultarPrueba, hayPruebas } from './pruebas.ts'
+import { RED_CAIDA, consultarPrueba, hayPruebas } from './pruebas.ts'
 
 /** Texto que ve el operador cuando la respuesta no cumple el contrato. */
 export const MENSAJE_CONTRATO = 'Respuesta inesperada del servidor.'
@@ -75,9 +75,14 @@ export async function obtener<T>(
   // En desarrollo, un escenario activo (`?pruebas=…`) responde sin red y
   // pasa por la MISMA validación que la API real: un cuerpo simulado
   // desviado del contrato se ve como «Respuesta inesperada». Si el escenario
-  // no cubre la ruta, se contesta lo mismo — nunca se mezcla con datos reales.
+  // no cubre la ruta, se contesta lo mismo — nunca se mezcla con datos
+  // reales. `RED_CAIDA` simula la API apagada (break-ui: «caída a mitad de
+  // sesión») y se traduce en el error de red de verdad.
   if (hayPruebas()) {
     const pruebas = consultarPrueba(ruta)
+    if (pruebas === RED_CAIDA) {
+      return { estado: 'error', tipo: 'red', mensaje: MENSAJE_RED }
+    }
     return pruebas === undefined
       ? { estado: 'error', tipo: 'contrato', mensaje: MENSAJE_CONTRATO }
       : validar(pruebas, esquema)

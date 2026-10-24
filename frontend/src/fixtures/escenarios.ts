@@ -8,7 +8,9 @@
  * Reglas del brief de la Fase B2:
  *
  * 1. **Solo estados que el sistema real no produce a demanda** (señal
- *    operable, historial largo, ventana sin predicciones, extremos). Todo lo
+ *    operable, historial largo, ventana sin predicciones, extremos) más los
+ *    casos límite que break-ui exige pasar por la pantalla (sin velas, una
+ *    vela, dato desactualizado y API caída a mitad de sesión). Todo lo
  *    demás — incluido el copy — es lo que la API de B1 devuelve de verdad:
  *    los textos de señal replican `src/security/perfiles.py`, los de estado
  *    `src/endpoints/estado.py`, los de resultado `src/utils/resultados.py` y
@@ -37,6 +39,7 @@ import type {
   Velas,
   Vela,
 } from '../api/esquemas.ts'
+import { RED_CAIDA } from '../api/pruebas.ts'
 import type { ResolutorPruebas } from '../api/pruebas.ts'
 import {
   APERTURA_MINUTOS,
@@ -52,6 +55,11 @@ export const ESCENARIOS = [
   'historial-largo',
   'sin-predicciones',
   'extremos',
+  // break-ui (B2.5): los casos límite de datos que la pantalla debe sobrellevar.
+  'sin-velas',
+  'una-vela',
+  'dato-desactualizado',
+  'api-caida',
 ] as const
 
 export type NombreEscenario = (typeof ESCENARIOS)[number]
@@ -98,6 +106,14 @@ const MOTIVO_PENDIENTE =
 const MOTIVO_DISPONIBLE = 'Horizonte de 15 min completo dentro de la sesión.'
 const MOTIVO_NO_APLICA =
   'El horizonte de 15 min cae fuera de la sesión (cierre de mercado).'
+const MOTIVO_SIN_VELAS =
+  'Sin velas registradas: no hay datos en horario de mercado.'
+const MOTIVO_RENDIMIENTO_SIN_VELAS = 'Sin velas registradas en la serie.'
+
+/** Aviso de `predictions` cuando la ventana de 12 velas aún no está completa. */
+const AVISO_VENTANA =
+  'Sin predicción registrada todavía: la ventana de 12 velas de la sesión ' +
+  'aún no está completa (no altera el estado).'
 
 // -- piezas comunes ----------------------------------------------------------
 
@@ -377,7 +393,50 @@ function rendimientoSimulado(
   }
 }
 
+/**
+ * Rendimiento derivado de la MISMA serie que grafica el chart: en producción
+ * `/api/yield` y el resumen del gráfico salen de velas idénticas, así que
+ * aquí se calcula igual —variación apertura→cierre como `resumirVelas`— y se
+ * aplica la regla de `AsymmetricCalculator.calculate_yield` (≥ 0 → ×2;
+ * < 0 → sin apalancar) con el umbral en ≤ −1,25 % (`is_threshold_breached`).
+ *
+ * Excepción consciente: `escenarioExtremos` inyecta su −2,14 % de gap a mano
+ * (la serie sintética no llega ahí); es la única cifra de rendimiento que no
+ * sale de la serie y está anotada como desviación en el informe de B2.
+ */
+function rendimientoDeSerie(
+  primera: Vela,
+  ultima: Vela,
+  ahora: number,
+  cambios: Partial<Rendimiento> = {},
+): Rendimiento {
+  const variacion = ((ultima.close - primera.open) / primera.open) * 100
+  const rendimiento = variacion >= 0 ? variacion * 2 : variacion
+  return rendimientoSimulado(primera, ultima, ahora, {
+    variacion_nasdaq_pct: redondear(variacion, 4),
+    rendimiento_ritech_pct: redondear(rendimiento, 4),
+    umbral_perdida_alcanzado: variacion <= -1.25,
+    ...cambios,
+  })
+}
+
 const SALUD: Salud = { estado: 'ok', servicio: 'api', version: '0.1.0' }
+
+/** Réplica de `_sin_datos()` de `src/endpoints/rendimiento.py` (sin velas). */
+function rendimientoSinDatos(motivo: string): Rendimiento {
+  return {
+    virtual: true,
+    nota: NOTA_RENDIMIENTO,
+    disponible: false,
+    motivo,
+    apertura_sesion: null,
+    ultima_vela: null,
+    variacion_nasdaq_pct: null,
+    rendimiento_ritech_pct: null,
+    limite_perdida_pct: 1.25,
+    umbral_perdida_alcanzado: false,
+  }
+}
 
 interface DatosEscenario {
   status: EstadoSistema
@@ -507,10 +566,7 @@ function escenarioSenalOperable(ahora: number): DatosEscenario {
     ultima: { encontrada: true, prediccion: ultimaPrediccion, senal, avisos: [] },
     predicciones,
     avisosHistorial: [],
-    rendimiento: rendimientoSimulado(primera, ultimaVela, ahora, {
-      variacion_nasdaq_pct: 0.87,
-      rendimiento_ritech_pct: 1.74,
-    }),
+    rendimiento: rendimientoDeSerie(primera, ultimaVela, ahora),
     calidad: calidadSimulada(ahora),
   }
 }
@@ -555,7 +611,7 @@ function escenarioHistorialLargo(ahora: number): DatosEscenario {
     ultima: { encontrada: true, prediccion: ultimaPrediccion, senal, avisos: [] },
     predicciones,
     avisosHistorial: [],
-    rendimiento: rendimientoSimulado(primera, ultimaVela, ahora),
+    rendimiento: rendimientoDeSerie(primera, ultimaVela, ahora),
     calidad: calidadSimulada(ahora),
   }
 }
@@ -567,9 +623,6 @@ function escenarioSinPredicciones(ahora: number): DatosEscenario {
   const primera = velas[0]
   const ultimaVela = velas[velas.length - 1]
   const senal = senalSinPrediccion(PERFIL)
-  const aviso =
-    'Sin predicción registrada todavía: la ventana de 12 velas de la sesión ' +
-    'aún no está completa (no altera el estado).'
 
   return {
     status: {
@@ -583,16 +636,13 @@ function escenarioSinPredicciones(ahora: number): DatosEscenario {
       perfil: { nombre: PERFIL, umbral_confianza: UMBRAL, max_loss_day: 1.25, por_defecto: true },
       ultima_prediccion: null,
       senal,
-      avisos: [aviso],
+      avisos: [AVISO_VENTANA],
     },
     velas,
     ultima: { encontrada: false, prediccion: null, senal, avisos: [] },
     predicciones: [],
     avisosHistorial: [],
-    rendimiento: rendimientoSimulado(primera, ultimaVela, ahora, {
-      variacion_nasdaq_pct: 0.05,
-      rendimiento_ritech_pct: 0.1,
-    }),
+    rendimiento: rendimientoDeSerie(primera, ultimaVela, ahora),
     calidad: calidadSimulada(ahora),
   }
 }
@@ -649,6 +699,9 @@ function escenarioExtremos(ahora: number): DatosEscenario {
     ultima: { encontrada: true, prediccion: ultimaPrediccion, senal, avisos: [] },
     predicciones,
     avisosHistorial: [AVISO_EXTREMO],
+    // Gap (CR-001): −2,14 % inyectado a propósito — la serie sintética no
+    // llega ahí y el escenario existe justo para ver el caso de gap. Única
+    // cifra de rendimiento que no sale de la serie (desviación documentada).
     rendimiento: rendimientoSimulado(primera, ultimaVela, ahora, {
       variacion_nasdaq_pct: -2.14,
       rendimiento_ritech_pct: -2.14,
@@ -673,11 +726,119 @@ function escenarioExtremos(ahora: number): DatosEscenario {
   }
 }
 
+// -- break-ui (B2.5): los casos que la pantalla debe sobrellevar ---------------
+
+/** 0 velas: gráfico vacío, sin rendimiento y sin predicción que evaluar. */
+function escenarioSinVelas(ahora: number): DatosEscenario {
+  const senal = senalSinPrediccion(PERFIL)
+  return {
+    status: {
+      estado: 'AMARILLO',
+      motivo: MOTIVO_SIN_VELAS,
+      mercado: { abierto: true, motivo: MOTIVO_ABIERTO, feriado: false, zona: ZONA_MERCADO, horario: HORARIO },
+      ultima_vela: null,
+      retraso_max_s: 600,
+      ia: { disponible: true, detalle: IA_OK },
+      modo: { nombre: 'ASESOR', descripcion: DESCRIPCION_ASESOR, autonomo_disponible: false, motivo_bloqueo: MOTIVO_BLOQUEO },
+      perfil: { nombre: PERFIL, umbral_confianza: UMBRAL, max_loss_day: 1.25, por_defecto: true },
+      ultima_prediccion: null,
+      senal,
+      avisos: [AVISO_VENTANA],
+    },
+    velas: [],
+    ultima: { encontrada: false, prediccion: null, senal, avisos: [] },
+    predicciones: [],
+    avisosHistorial: [],
+    rendimiento: rendimientoSinDatos(MOTIVO_RENDIMIENTO_SIN_VELAS),
+    calidad: calidadSimulada(ahora),
+  }
+}
+
+/** 1 vela: una sola columna, rendimiento 0 y ventana aún incompleta. */
+function escenarioUnaVela(ahora: number): DatosEscenario {
+  const fin = Math.floor(ahora / VELA_MS) * VELA_MS
+  const velas = construirVelas(fin, 1, 715.8)
+  const vela = velas[0]
+  const senal = senalSinPrediccion(PERFIL)
+  return {
+    status: {
+      estado: 'VERDE',
+      motivo: MOTIVO_VERDE,
+      mercado: { abierto: true, motivo: MOTIVO_ABIERTO, feriado: false, zona: ZONA_MERCADO, horario: HORARIO },
+      ultima_vela: resumen(vela, ahora),
+      retraso_max_s: 600,
+      ia: { disponible: true, detalle: IA_OK },
+      modo: { nombre: 'ASESOR', descripcion: DESCRIPCION_ASESOR, autonomo_disponible: false, motivo_bloqueo: MOTIVO_BLOQUEO },
+      perfil: { nombre: PERFIL, umbral_confianza: UMBRAL, max_loss_day: 1.25, por_defecto: true },
+      ultima_prediccion: null,
+      senal,
+      avisos: [AVISO_VENTANA],
+    },
+    velas,
+    ultima: { encontrada: false, prediccion: null, senal, avisos: [] },
+    predicciones: [],
+    avisosHistorial: [],
+    // Apertura = última = la misma vela → variación 0 (rompe el signo +/− de
+    // 0 en el formateo; `rendimientoDeSerie` lo calcula igual que el backend).
+    rendimiento: rendimientoDeSerie(vela, vela, ahora),
+    calidad: calidadSimulada(ahora),
+  }
+}
+
+/**
+ * Última vela 12+ min por encima del retraso máximo (2 intervalos = 600 s)
+ * con mercado abierto: estado AMARILLO por dato desactualizado. El motivo se
+ * calcula con la MISMA fórmula que `src/endpoints/estado.py` para que las
+ * cifras del texto y las del payload no diverjan nunca.
+ */
+function escenarioDatoDesactualizado(ahora: number): DatosEscenario {
+  const ultimaMs = Math.floor((ahora - 12 * 60 * 1000) / VELA_MS) * VELA_MS
+  const antiguedadS = Math.max(0, Math.floor((ahora - ultimaMs) / 1000))
+  const velas = construirVelas(ultimaMs - 77 * VELA_MS, 78, 714.2)
+  const primera = velas[0]
+  const ultimaVela = velas[velas.length - 1]
+  // Slots derivados de las propias velas: las predicciones deben ser
+  // coherentes con la serie que se muestra, aunque el reloj real esté fuera.
+  const sesion = velas.map((v) => v.timestamp)
+  const predicciones = construirHistorial([sesion], [SEMILLA_ESTABLE])
+  const ultimaPrediccion = predicciones[0]
+  const senal = senalDe(ultimaPrediccion.trend_prediction, ultimaPrediccion.confidence_score, PERFIL)
+
+  return {
+    status: {
+      estado: 'AMARILLO',
+      motivo:
+        `Sin datos en horario de mercado: la última vela tiene ` +
+        `${Math.floor(antiguedadS / 60)} min de antigüedad (máximo 10 min).`,
+      mercado: { abierto: true, motivo: MOTIVO_ABIERTO, feriado: false, zona: ZONA_MERCADO, horario: HORARIO },
+      ultima_vela: resumen(ultimaVela, ahora),
+      retraso_max_s: 600,
+      ia: { disponible: true, detalle: IA_OK },
+      modo: { nombre: 'ASESOR', descripcion: DESCRIPCION_ASESOR, autonomo_disponible: false, motivo_bloqueo: MOTIVO_BLOQUEO },
+      perfil: { nombre: PERFIL, umbral_confianza: UMBRAL, max_loss_day: 1.25, por_defecto: true },
+      ultima_prediccion: ultimaPrediccion,
+      senal,
+      avisos: [],
+    },
+    velas,
+    ultima: { encontrada: true, prediccion: ultimaPrediccion, senal, avisos: [] },
+    predicciones,
+    avisosHistorial: [],
+    rendimiento: rendimientoDeSerie(primera, ultimaVela, ahora),
+    calidad: calidadSimulada(ahora),
+  }
+}
+
 const CONSTRUCTORES: Record<NombreEscenario, (ahora: number) => DatosEscenario> = {
   'senal-operable': escenarioSenalOperable,
   'historial-largo': escenarioHistorialLargo,
   'sin-predicciones': escenarioSinPredicciones,
   extremos: escenarioExtremos,
+  'sin-velas': escenarioSinVelas,
+  'una-vela': escenarioUnaVela,
+  'dato-desactualizado': escenarioDatoDesactualizado,
+  // Mismos datos que una sesión operable: la caída la provoca el resolutor.
+  'api-caida': escenarioSenalOperable,
 }
 
 // -- servidor simulado --------------------------------------------------------
@@ -736,7 +897,24 @@ export function servirEscenario(
   }
 }
 
-/** Resolutor para el registro de pruebas: se reconstruye en cada consulta. */
+/**
+ * Resolutor para el registro de pruebas: se crea UNA vez al instalar el
+ * escenario y guarda el reloj de arranque.
+ *
+ * `api-caida` es el único caso stateful (break-ui, B2.5): sirve con normalidad
+ * durante `CAIDA_TRAS_MS` — la primera carga pinta con datos — y a partir de
+ * ahí TODAS las rutas devuelven `RED_CAIDA`, como si el proceso del API se
+ * cayera a mitad de sesión. La UI debe conservar el último dato bueno y
+ * mostrar el mensaje de error sin perder el estado.
+ */
+const CAIDA_TRAS_MS = 15_000
+
 export function resolutorDe(escenario: NombreEscenario): ResolutorPruebas {
-  return (ruta) => servirEscenario(escenario, ruta, Date.now())
+  const inicio = Date.now()
+  return (ruta) => {
+    if (escenario === 'api-caida' && Date.now() - inicio > CAIDA_TRAS_MS) {
+      return RED_CAIDA
+    }
+    return servirEscenario(escenario, ruta, Date.now())
+  }
 }
