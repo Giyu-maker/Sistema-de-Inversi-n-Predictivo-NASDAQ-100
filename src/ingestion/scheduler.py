@@ -12,6 +12,10 @@ siendo el reloj y no el negocio.
 Decisiones de alcance (trazadas, no olvidos):
 - Cadencia con `while True` + `asyncio.sleep`: APScheduler/Celery son
   dependencias que no se justifican para un loop de 5 minutos.
+- Antes de cada tick corre la **recuperación de huecos** (B2.5): si la
+  última vela del bucket se queda a más de un intervalo DENTRO de sesión, se
+  pide el tramo faltante (1 crédito, con cuota 8/min y 800/día) y se escribe
+  con la guarda insert-if-absent. El primer tick es, por tanto, el arranque.
 - La variación se calcula entre las dos últimas velas del payload como
   aproximación provisional; la variación de sesión (RF-201) requiere el
   precio de entrada de la posición, que llega con el estado de
@@ -30,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import date
 from typing import TYPE_CHECKING, Any
 
 from src.ai.client import InferenceClient
@@ -37,6 +42,8 @@ from src.ai.prediccion import VELAS_A_CONSULTAR, predecir_y_persistir
 from src.calculator.asymmetric import AsymmetricCalculator
 from src.database.predictions import RepositorioPredicciones
 from src.ingestion.engine import IngestionEngine, NasdaqCandle, parse_raw_candle
+from src.ingestion.huecos import CuotaBasica, recuperar_hueco
+from src.utils.mercado import feriados_desde_entorno
 
 if TYPE_CHECKING:  # solo anotaciones: el lector real se construye en main()
     from src.database.influx_lectura import LectorVelas
@@ -74,6 +81,8 @@ class IngestionScheduler:
         lector: LectorVelas | None = None,
         cliente: InferenceClient | None = None,
         predicciones: RepositorioPredicciones | None = None,
+        cuota: CuotaBasica | None = None,
+        feriados: frozenset[date] | None = None,
     ) -> None:
         self.engine = engine
         self.calculator = calculator
@@ -81,6 +90,11 @@ class IngestionScheduler:
         self.lector = lector
         self.cliente = cliente
         self.predicciones = predicciones
+        # Recuperación de huecos (Fase B2.5): corre en el primer tick — es
+        # decir, al arrancar — y en cada tick posterior. La cuota se crea aquí
+        # para que sus ventanas duren lo que dura el proceso.
+        self.cuota = cuota if cuota is not None else CuotaBasica()
+        self._feriados = feriados if feriados is not None else feriados_desde_entorno()
 
         colaborores: dict[str, object | None] = {
             "lector": lector, "cliente": cliente, "predicciones": predicciones,
@@ -101,7 +115,8 @@ class IngestionScheduler:
             )
 
     async def run_once(self) -> None:
-        """Un ciclo completo: obtiene la vela, valida, persiste, predice y calcula."""
+        """Un ciclo completo: recupera huecos, obtiene la vela, valida, persiste, predice y calcula."""
+        await self._recuperar_huecos()
         payload = await self.engine.fetch_nasdaq_quote()
         if not self.engine.validate_payload(payload):
             logger.warning("Payload de la fuente de datos rechazado por validación; no se persiste.")
@@ -126,6 +141,32 @@ class IngestionScheduler:
         )
         if self.calculator.is_market_gap(variation):
             logger.warning(self.calculator.gap_loss_notice(variation))
+
+    async def _recuperar_huecos(self) -> None:
+        """Cierra huecos de ingesta antes del tick (B2.5) — ver `src/ingestion/huecos.py`.
+
+        En el primer tick, esto ES el arranque; después, cada tick. Un fallo
+        aquí (Influx no responde, proveedor caído, cuota agotada) se registra
+        y **no detiene el ciclo normal**: la ingesta de la última vela sigue
+        siendo útil aunque la recuperación no lo esté.
+        """
+        try:
+            informe = await recuperar_hueco(
+                self.engine, self.cuota, feriados=self._feriados
+            )
+        except Exception as exc:  # noqa: BLE001 — un hueco no puede tumbar la cadencia
+            logger.error("Recuperación de huecos falló: %s", exc)
+            return
+        if informe.motivo == "recuperado":
+            logger.warning(
+                "Hueco recuperado: %s · escritas %d, omitidas %d (1 crédito).",
+                informe.detalle, informe.escritas, informe.omitidas,
+            )
+        elif informe.motivo not in ("sin-hueco", "fuera-de-sesion"):
+            logger.info(
+                "Recuperación de huecos sin acción (%s): %s",
+                informe.motivo, informe.detalle,
+            )
 
     def _predecir(self) -> None:
         """Paso de IA: ventana de la sesión → M1 → `ai_predictions`.

@@ -53,6 +53,16 @@ _EXISTENCE_QUERY_TEMPLATE = """from(bucket: "{bucket}")
   |> filter(fn: (r) => r["_field"] == "price_close")
 """
 
+# Última vela persistida (recuperación de huecos, src/ingestion/huecos.py).
+# `last()` sobre un rango fijo de 30 días: cubre fines de semana y feriados
+# sin que el rango crezca con la antigüedad del bucket.
+_LAST_QUERY_TEMPLATE = """from(bucket: "{bucket}")
+  |> range(start: -30d)
+  |> filter(fn: (r) => r["_measurement"] == "NasdaqTick")
+  |> filter(fn: (r) => r["_field"] == "price_close")
+  |> last()
+"""
+
 
 def _epoch_ms_to_rfc3339(epoch_ms: int) -> str:
     """Convierte epoch ms a RFC3339 con precisión de milisegundos (UTC).
@@ -221,6 +231,23 @@ class IngestionEngine:
         para que el backfill no multiplique peticiones contra InfluxDB.
         """
         return await asyncio.to_thread(self._existing_timestamps, set(timestamps))
+
+    async def ultima_vela_ms(self) -> int | None:
+        """Epoch ms de la vela más reciente del bucket; `None` si no hay datos.
+
+        La consulta corre en hilo aparte (`asyncio.to_thread`), igual que el
+        resto de lecturas/escrituras de InfluxDB desde el event loop.
+        """
+        return await asyncio.to_thread(self._ultima_vela_ms)
+
+    def _ultima_vela_ms(self) -> int | None:
+        tables = self.influx_client.query_api().query(
+            _LAST_QUERY_TEMPLATE.format(bucket=self._bucket), org=self._org
+        )
+        for table in tables:
+            for record in table.records:
+                return int(record.get_time().timestamp() * 1000)
+        return None
 
     def _existing_timestamps(self, timestamps: set[int]) -> set[int]:
         if not timestamps:

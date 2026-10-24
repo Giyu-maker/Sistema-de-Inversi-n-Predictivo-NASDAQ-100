@@ -38,3 +38,20 @@ class SyntheticMarketDataProvider:
             return {"error": self._error}
         # deepcopy: un test que muta el payload no contamina la siguiente llamada.
         return {"candles": copy.deepcopy(self._candles)}
+
+    async def fetch_candles_range(
+        self, start_date: str, end_date: str, outputsize: int = 5000
+    ) -> dict[str, Any]:
+        """Tramo sintético: las velas de ejemplo dentro del rango pedido.
+
+        Las claves son ``YYYY-MM-DD HH:MM:SS``, así que la comparación de
+        cadenas es cronológica. `outputsize` se ignora (son dos velas).
+        """
+        if self._error is not None:
+            return {"error": self._error}
+        dentro = {
+            ts: copy.deepcopy(raw)
+            for ts, raw in self._candles.items()
+            if start_date <= ts <= end_date
+        }
+        return {"candles": dentro}

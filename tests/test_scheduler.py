@@ -37,6 +37,9 @@ def _engine(payload: dict[str, Any], valid: bool = True) -> Mock:
     engine.fetch_nasdaq_quote = AsyncMock(return_value=payload)
     engine.validate_payload = Mock(return_value=valid)
     engine.write_to_influx = AsyncMock()
+    # Recuperación de huecos (B2.5): sin última vela persistida, la pasada no
+    # pide nada y el tick se prueba igual que antes.
+    engine.ultima_vela_ms = AsyncMock(return_value=None)
     return engine
 
 

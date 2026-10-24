@@ -18,6 +18,11 @@ proveedor concreto):
 
   `IngestionEngine.validate_payload()` devuelve ``False`` y el ciclo se
   descarta sin persistir.
+
+Además del muestreo cíclico, el contrato incluye `fetch_candles_range()`
+para pedir un tramo concreto de histórico (backfill y recuperación de
+huecos, `src/ingestion/huecos.py`): mismo formato canónico, mismas reglas
+de error.
 """
 
 from __future__ import annotations
@@ -34,5 +39,16 @@ class MarketDataProvider(Protocol):
 
         Las fallas de red/HTTP se propagan como excepción (el orquestador las
         captura y reintenta en el siguiente ciclo de 5 min).
+        """
+        ...
+
+    async def fetch_candles_range(
+        self, start_date: str, end_date: str, outputsize: int = 5000
+    ) -> dict[str, Any]:
+        """Obtiene un tramo de histórico en el formato canónico.
+
+        `start_date`/`end_date` van en ``YYYY-MM-DD HH:MM:SS`` en hora local
+        del intercambio (Nueva York). Cuesta 1 crédito por petición: quien
+        llame es responsable de la cuota del plan (ver `CuotaBasica`).
         """
         ...
