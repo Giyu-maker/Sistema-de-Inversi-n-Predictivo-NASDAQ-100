@@ -1,23 +1,36 @@
 /**
- * Scaffold de la Fase B2: la pantalla de operación se construye por
- * sub-bloques sobre este shell (contrato de dirección en
- * `.impeccable/surfaces/frontend-src-app-tsx.md`). El único enganche de
- * B2.2 es el banner de datos de prueba: se registra en `main.tsx` antes del
- * primer render y solo existe en desarrollo (`src/fixtures/`).
+ * Pantalla de operación de la Fase B2: cabecera fija (estado, motivo,
+ * antigüedad, franja de sesión y tema) más la tarjeta de señal, enganchadas
+ * a los hooks de datos de B2.2. Los bloques siguientes (velas, rendimiento e
+ * historial) entran debajo en B2.4. Contrato de dirección en
+ * `.impeccable/surfaces/frontend-src-app-tsx.md`.
  */
+import { Cabecera } from './components/cabecera.tsx'
+import { TarjetaSenal } from './components/tarjeta-senal.tsx'
 import { bannerPruebas } from './api/pruebas.ts'
+import { llaveDe, useCiclo } from './hooks/useCiclo.ts'
+import { useEstado } from './hooks/useEstado.ts'
 
 export default function App() {
   const banner = bannerPruebas()
+  const { estado, fase, mensaje } = useEstado()
+  const ciclo = useCiclo(llaveDe(estado))
+
   return (
-    <main className="min-h-dvh bg-background text-foreground">
+    <div className="min-h-dvh bg-background text-foreground">
       {banner ? banner() : null}
-      <div className="mx-auto max-w-5xl px-6 py-16">
-        <h1 className="text-2xl font-semibold">RiTech NASDAQ-100</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Panel de operación — en construcción (Fase B2).
-        </p>
-      </div>
-    </main>
+      <Cabecera estado={estado} fase={fase} mensaje={mensaje} />
+      <main className="mx-auto max-w-5xl px-6 py-8">
+        {estado === null ? (
+          <p className="text-sm text-muted-foreground">
+            {fase === 'error'
+              ? (mensaje ?? 'No se pudo contactar con el servidor.')
+              : 'Esperando la primera respuesta del sistema…'}
+          </p>
+        ) : (
+          <TarjetaSenal estado={estado} calidad={ciclo.datos?.calidad ?? null} />
+        )}
+      </main>
+    </div>
   )
 }
