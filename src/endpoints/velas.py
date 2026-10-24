@@ -21,8 +21,8 @@ from src.endpoints.esquemas import VelasSalida
 router = APIRouter()
 
 NOTA = (
-    "Velas de 5 minutos del índice (proxy QQQ, RF-101). "
-    "Las agregaciones superiores se calculan en InfluxDB."
+    "Velas de 5 minutos de QQQ, el índice que sigue el sistema. "
+    "Las agregaciones superiores se guardan en la base de precios."
 )
 
 
@@ -66,7 +66,7 @@ def candles(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(
-            status_code=503, detail=f"Base de series temporales no disponible: {exc}"
+            status_code=503, detail=f"La base de precios no responde: {exc}"
         ) from exc
 
     return VelasSalida(

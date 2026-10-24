@@ -55,7 +55,7 @@ class TestCandles:
         assert lector.consultas_ultimas == [200]
         assert cuerpo["total"] == 78
         assert cuerpo["aggregate"] == "5m"
-        assert "QQQ" in cuerpo["nota"] and "RF-101" in cuerpo["nota"]
+        assert "QQQ" in cuerpo["nota"] and "base de precios" in cuerpo["nota"]
 
     def test_limit_se_pasa_al_lector(self) -> None:
         lector = LectorFalso(SERIE_COMPLETA)
@@ -114,9 +114,7 @@ class TestCandles:
         respuesta = cliente_de_prueba(estado).get("/api/candles")
 
         assert respuesta.status_code == 503
-        assert respuesta.json()["mensaje"].startswith(
-            "Base de series temporales no disponible"
-        )
+        assert respuesta.json()["mensaje"].startswith("La base de precios no responde")
 
     def test_las_fechas_van_en_formato_del_srs(self) -> None:
         cuerpo = cliente_de_prueba(
@@ -185,7 +183,7 @@ class TestPredictions:
         cuerpo = respuesta.json()
         assert len(cuerpo["predicciones"]) == 1
         assert cuerpo["predicciones"][0]["resultado_real"] is None
-        assert any("Series temporales no disponibles" in a for a in cuerpo["avisos"])
+        assert any("No se pudieron leer los precios históricos" in a for a in cuerpo["avisos"])
 
     def test_postgres_caído_es_503_en_espanol(self) -> None:
         repo = PrediccionesFalso(error=ConnectionError("refused"))
@@ -226,7 +224,7 @@ class TestUltimaPrediccion:
         assert cuerpo["senal"]["operable"] is False
         assert "Sin predicción registrada" in cuerpo["senal"]["motivo"]
         # El aviso de configuración por defecto viaja en este endpoint (D8).
-        assert any("Sin fila de configuración" in a for a in cuerpo["avisos"])
+        assert any("Sin configuración guardada" in a for a in cuerpo["avisos"])
 
     def test_con_prediccion_trae_senal_y_resultado_real(self) -> None:
         repo = PrediccionesFalso()
@@ -242,7 +240,7 @@ class TestUltimaPrediccion:
         assert cuerpo["senal"] == {
             "operable": True,
             "motivo": (
-                "Señal operable: UP con confianza 0,90 "
+                "Señal operable: tendencia al alza con confianza 0,90 "
                 "≥ umbral 0,75 del perfil MODERATE."
             ),
             "umbral": 0.75,
@@ -266,7 +264,7 @@ class TestUltimaPrediccion:
         cuerpo = respuesta.json()
         assert cuerpo["encontrada"] is True
         assert cuerpo["prediccion"]["resultado_real"] is None
-        assert any("Series temporales no disponibles" in a for a in cuerpo["avisos"])
+        assert any("No se pudieron leer los precios históricos" in a for a in cuerpo["avisos"])
 
     def test_postgres_caído_es_503_en_espanol(self) -> None:
         repo = PrediccionesFalso(error=ConnectionError("refused"))
@@ -318,9 +316,7 @@ class TestYield:
         respuesta = cliente_de_prueba(estado).get("/api/yield")
 
         assert respuesta.status_code == 503
-        assert respuesta.json()["mensaje"].startswith(
-            "Base de series temporales no disponible"
-        )
+        assert respuesta.json()["mensaje"].startswith("La base de precios no responde")
 
     def test_serie_vacia_no_inventa_cifras(self) -> None:
         cuerpo = cliente_de_prueba(self._estado_con([])).get("/api/yield").json()
@@ -358,7 +354,7 @@ class TestCalidadModelo:
 
         assert respuesta.status_code == 200
         assert respuesta.json()["disponible"] is False
-        assert "Inferencia no disponible" in respuesta.json()["motivo"]
+        assert "La IA no responde" in respuesta.json()["motivo"]
         assert "sin ventaja direccional" in respuesta.json()["nota"]
 
     def test_cuerpo_que_no_cumple_el_contrato_se_informa(self) -> None:
@@ -366,7 +362,7 @@ class TestCalidadModelo:
         cuerpo = cliente_de_prueba(estado).get("/api/model-quality").json()
 
         assert cuerpo["disponible"] is False
-        assert "Respuesta inesperada del servicio de inferencia" in cuerpo["motivo"]
+        assert "Respuesta inesperada del servicio de IA" in cuerpo["motivo"]
 
     def test_sin_servicio_configurado_tambien_responde(self) -> None:
         estado = estado_de_prueba(cliente_ia=ClienteIaFalso())
@@ -374,7 +370,7 @@ class TestCalidadModelo:
         cuerpo = cliente_de_prueba(estado).get("/api/model-quality").json()
 
         assert cuerpo["disponible"] is False
-        assert cuerpo["motivo"] == "Sin servicio de inferencia configurado."
+        assert cuerpo["motivo"] == "Sin servicio de IA configurado."
 
 
 class TestErroresEnEspañol:

@@ -71,26 +71,26 @@ const PERFIL = 'MODERATE'
 const UMBRAL = 0.75
 
 const NOTA_VELAS =
-  'Velas de 5 minutos del índice (proxy QQQ, RF-101). ' +
-  'Las agregaciones superiores se calculan en InfluxDB.'
+  'Velas de 5 minutos de QQQ, el índice que sigue el sistema. ' +
+  'Las agregaciones superiores se guardan en la base de precios.'
 const NOTA_RENDIMIENTO =
-  'Rendimiento virtual calculado sobre la serie histórica: sin capital en ' +
-  'riesgo y sin órdenes enviadas (Modo Asesor, RF-401).'
+  'Rendimiento virtual calculado sobre los precios históricos: sin capital en ' +
+  'riesgo y sin órdenes enviadas (Modo Asesor).'
 const NOTA_CALIDAD =
   'Modelo local sin ventaja direccional demostrada: la interfaz no emite ' +
   'órdenes de compra ni de venta, solo tendencia con su nivel de confianza.'
 const DESCRIPCION_ASESOR =
-  'La IA solo recomienda; un operador humano ejecuta manualmente (RF-401).'
+  'La IA solo recomienda; un operador humano ejecuta cada orden manualmente.'
 const MOTIVO_BLOQUEO =
-  'Requiere autorización explícita de la Gerente General y autenticación OTP ' +
-  'local (RF-401, Sprint 4).'
-const IA_OK = 'Servicio de inferencia activo y modelo cargado.'
+  'Requiere autorización explícita de la Gerente General y autenticación ' +
+  'multifactor local (OTP).'
+const IA_OK = 'La IA está activa y el modelo cargado.'
 const HORARIO = '09:30-16:00 ET'
 const MOTIVO_ABIERTO = 'Horario regular de mercado'
 const MOTIVO_CIERRADO = 'Después del cierre (09:30-16:00 ET)'
-const MOTIVO_VERDE = 'Dato actualizado, IA disponible y última predicción STABLE.'
+const MOTIVO_VERDE = 'Dato actualizado, IA disponible y última predicción sin movimiento.'
 const MOTIVO_CIERRA = 'Mercado cerrado: Después del cierre (09:30-16:00 ET).'
-const MOTIVO_ULTIMA_UP = 'La última predicción es UP, no STABLE.'
+const MOTIVO_ULTIMA_UP = 'La última predicción no es estable: es tendencia al alza.'
 
 const MOTIVO_PENDIENTE =
   'Horizonte de 15 min aún no completo: la predicción está entre las 3 ' +
@@ -122,9 +122,10 @@ const UMBRALES: Record<string, number> = {
 
 function senalOperable(tendencia: string, confianza: number, perfil: string): Senal {
   const umbral = UMBRALES[perfil]
+  const plano = tendencia === 'UP' ? 'al alza' : 'a la baja'
   return {
     operable: true,
-    motivo: `Señal operable: ${tendencia} con confianza ${dos(confianza)} ≥ umbral ${dos(umbral)} del perfil ${perfil}.`,
+    motivo: `Señal operable: tendencia ${plano} con confianza ${dos(confianza)} ≥ umbral ${dos(umbral)} del perfil ${perfil}.`,
     umbral,
     perfil,
     tendencia,
@@ -148,7 +149,7 @@ function senalStable(confianza: number, perfil: string): Senal {
   return {
     operable: false,
     motivo:
-      'STABLE nunca es una señal operable: el modelo no anticipa movimiento ' +
+      'Sin movimiento esperado: el modelo no anticipa movimiento ' +
       'aprovechable, con cualquier nivel de confianza.',
     umbral: UMBRALES[perfil],
     perfil,
@@ -612,7 +613,8 @@ const RAZONAMIENTO_EXTREMO =
   Array(6).fill('El volumen negociado domina la atribución cuando la ventana observada es reciente.').join(' ')
 
 const AVISO_EXTREMO =
-  'Series temporales no disponibles: el resultado real no se pudo calcular ' +
+  'No se pudieron leer los precios históricos: el resultado real no se ' +
+  'pudo calcular ' +
   "(HTTPConnectionPool(host='127.0.0.1', port=8086): Max retries exceeded with " +
   'url: /api/v2/write?org=ritech&bucket=nasdaq100&precision=ms (Caused by ' +
   "NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7f3c9a2e1b40>: " +
@@ -632,7 +634,7 @@ function escenarioExtremos(ahora: number): DatosEscenario {
   return {
     status: {
       estado: 'AMARILLO',
-      motivo: 'La última predicción es DOWN, no STABLE.',
+      motivo: 'La última predicción no es estable: es tendencia a la baja.',
       mercado: { abierto: true, motivo: MOTIVO_ABIERTO, feriado: false, zona: ZONA_MERCADO, horario: HORARIO },
       ultima_vela: resumen(ultimaVela, ahora),
       retraso_max_s: 600,

@@ -47,17 +47,17 @@ from src.endpoints.esquemas import (
     PerfilSalida,
 )
 from src.ingestion.engine import NasdaqCandle
-from src.security.perfiles import senal_sin_prediccion
+from src.security.perfiles import EN_LLANO, senal_sin_prediccion
 from src.utils.mercado import mercado
 
 router = APIRouter()
 
 DESCRIPCION_ASESOR = (
-    "La IA solo recomienda; un operador humano ejecuta manualmente (RF-401)."
+    "La IA solo recomienda; un operador humano ejecuta cada orden manualmente."
 )
 MOTIVO_BLOQUEO = (
-    "Requiere autorización explícita de la Gerente General y autenticación OTP "
-    "local (RF-401, Sprint 4)."
+    "Requiere autorización explícita de la Gerente General y autenticación "
+    "multifactor local (OTP)."
 )
 
 
@@ -79,8 +79,8 @@ def status(estado: EstadoAplicacion = Depends(estado_app)) -> EstadoSistemaSalid
         # Sin la tabla no se puede saber si la última predicción es STABLE, y
         # responder VERDE sería mentir.
         error_pg = next(
-            (aviso for aviso in vigente.avisos if "PostgreSQL" in aviso),
-            "PostgreSQL no responde: no se pudo leer la última predicción.",
+            (aviso for aviso in vigente.avisos if "base de datos no responde" in aviso),
+            "La base de datos no responde: no se pudo leer la última predicción.",
         )
     ia = consultar_ia(estado)
 
@@ -160,7 +160,7 @@ def _ultima_vela(estado: EstadoAplicacion) -> tuple[NasdaqCandle | None, str | N
     try:
         vela = estado.lector.ultima_vela()
     except Exception as exc:  # noqa: BLE001 — InfluxDB caído no puede tumbar el estado
-        return None, f"InfluxDB no responde: {exc}"
+        return None, f"No se pudo leer la base de precios: {exc}"
     return vela, None
 
 
@@ -172,7 +172,7 @@ def _ultima_prediccion(
     try:
         return estado.predicciones.ultima(), None
     except Exception as exc:  # noqa: BLE001 — idem para PostgreSQL
-        return None, f"PostgreSQL no responde: {exc}"
+        return None, f"No se pudo leer la base de datos: {exc}"
 
 
 def _regla(
@@ -205,14 +205,15 @@ def _regla(
                 f"{retraso_max_s // 60} min)."
             )
     if not ia.disponible:
-        causas.append(f"IA no disponible: {ia.detalle}")
+        causas.append(ia.detalle)
     if ultima_prediccion is not None and ultima_prediccion.trend_prediction != "STABLE":
         causas.append(
-            f"La última predicción es {ultima_prediccion.trend_prediction}, no STABLE."
+            "La última predicción no es estable: es tendencia "
+            f"{EN_LLANO[ultima_prediccion.trend_prediction]}."
         )
     if error_pg:
         causas.append(error_pg)
 
     if causas:
         return "AMARILLO", " ".join(causas)
-    return "VERDE", "Dato actualizado, IA disponible y última predicción STABLE."
+    return "VERDE", "Dato actualizado, IA disponible y última predicción sin movimiento."

@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 NOTA = (
-    "Rendimiento virtual calculado sobre la serie histórica: sin capital en "
-    "riesgo y sin órdenes enviadas (Modo Asesor, RF-401)."
+    "Rendimiento virtual calculado sobre los precios históricos: sin capital en "
+    "riesgo y sin órdenes enviadas (Modo Asesor)."
 )
 
 
@@ -65,7 +65,7 @@ def rendimiento(estado: EstadoAplicacion = Depends(estado_app)) -> RendimientoSa
         serie = lector.ultimas_velas(VELAS_A_CONSULTAR)
     except Exception as exc:  # noqa: BLE001 — InfluxDB inaccesible → 503 en español
         raise HTTPException(
-            status_code=503, detail=f"Base de series temporales no disponible: {exc}"
+            status_code=503, detail=f"La base de precios no responde: {exc}"
         ) from exc
 
     if ultima is None or not serie:

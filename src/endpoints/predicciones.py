@@ -135,8 +135,8 @@ def _resultado_de_unico(
         )
     except Exception as exc:  # noqa: BLE001 — InfluxDB no disponible
         avisos.append(
-            f"Series temporales no disponibles: el resultado real no se pudo "
-            f"calcular ({exc})."
+            f"No se pudieron leer los precios históricos: el resultado real no se "
+            f"pudo calcular ({exc})."
         )
         return None
     return resultado_real(
@@ -161,8 +161,8 @@ def _resultados_en_lote(
     except Exception as exc:  # noqa: BLE001 — se pagina sin resultado real
         logger.warning("No se pudo calcular el resultado real del historial: %s", exc)
         avisos.append(
-            f"Series temporales no disponibles: el resultado real no está en "
-            f"esta página ({exc})."
+            f"No se pudieron leer los precios históricos: el resultado real no está "
+            f"en esta página ({exc})."
         )
         return {}
 

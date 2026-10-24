@@ -33,12 +33,12 @@ const ESTADO_REAL = {
   },
   ultima_vela: { timestamp: 1792526100000, fecha: '20/10/2026 14:55:00', precio: 717.32, antiguedad_s: 11913 },
   retraso_max_s: 600,
-  ia: { disponible: true, detalle: 'Servicio de inferencia activo y modelo cargado.' },
+  ia: { disponible: true, detalle: 'La IA está activa y el modelo cargado.' },
   modo: {
     nombre: 'ASESOR',
-    descripcion: 'La IA solo recomienda; un operador humano ejecuta manualmente (RF-401).',
+    descripcion: 'La IA solo recomienda; un operador humano ejecuta cada orden manualmente.',
     autonomo_disponible: false,
-    motivo_bloqueo: 'Requiere autorización explícita de la Gerente General y autenticación OTP local (RF-401, Sprint 4).',
+    motivo_bloqueo: 'Requiere autorización explícita de la Gerente General y autenticación multifactor local (OTP).',
   },
   perfil: { nombre: 'MODERATE', umbral_confianza: 0.75, max_loss_day: 1.25, por_defecto: false },
   ultima_prediccion: {
@@ -75,7 +75,7 @@ const VELAS_REAL = {
   ],
   total: 3,
   aggregate: '5m',
-  nota: 'Velas de 5 minutos del índice (proxy QQQ, RF-101). Las agregaciones superiores se calculan en InfluxDB.',
+  nota: 'Velas de 5 minutos de QQQ, el índice que sigue el sistema. Las agregaciones superiores se guardan en la base de precios.',
 }
 
 const ULTIMA_REAL = {
@@ -95,7 +95,7 @@ const PAGINA_REAL = {
 
 const RENDIMIENTO_REAL = {
   virtual: true,
-  nota: 'Rendimiento virtual calculado sobre la serie histórica: sin capital en riesgo y sin órdenes enviadas (Modo Asesor, RF-401).',
+  nota: 'Rendimiento virtual calculado sobre los precios históricos: sin capital en riesgo y sin órdenes enviadas (Modo Asesor).',
   disponible: true,
   motivo: null,
   apertura_sesion: { timestamp: 1792503000000, fecha: '20/10/2026 08:30:00', precio: 715.3, antiguedad_s: null },
@@ -219,7 +219,7 @@ test('senal-operable: señal operable de verdad y estado AMARILLO (UP ≠ STABLE
   const status = servirEscenario('senal-operable', '/api/status', Date.now())
   assert.equal(status.estado, 'AMARILLO')
   assert.equal(status.senal.operable, true)
-  assert.ok(status.senal.motivo.startsWith('Señal operable: UP'))
+  assert.ok(status.senal.motivo.startsWith('Señal operable: tendencia al alza'))
 })
 
 test('sin-predicciones: verde, sin señal y con el copy literal del backend', () => {

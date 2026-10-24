@@ -49,7 +49,7 @@ class TestStableNuncaEsSenal:
             senal = evaluar_senal("STABLE", confianza, perfil)
             assert senal.operable is False, f"STABLE operable con {perfil} y {confianza}"
             assert senal.tendencia == "STABLE"
-            assert "STABLE nunca es una señal operable" in senal.motivo
+            assert "Sin movimiento esperado" in senal.motivo
 
 
 class TestUmbralDeConfianza:

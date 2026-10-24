@@ -177,22 +177,22 @@ def consultar_ia(estado: EstadoAplicacion) -> IaSalida:
         return cacheada
 
     if estado.cliente_ia is None:
-        salida = IaSalida(disponible=False, detalle="Sin servicio de inferencia configurado.")
+        salida = IaSalida(disponible=False, detalle="Sin servicio de IA configurado.")
     else:
         try:
             cuerpo = estado.cliente_ia.salud()
         except ErrorDeInferencia as exc:
-            salida = IaSalida(disponible=False, detalle=f"Inferencia no disponible: {exc}")
+            salida = IaSalida(disponible=False, detalle=f"La IA no responde: {exc}")
         except Exception as exc:  # noqa: BLE001 — cualquier fallo de red es "no disponible"
-            salida = IaSalida(disponible=False, detalle=f"Inferencia no disponible: {exc}")
+            salida = IaSalida(disponible=False, detalle=f"La IA no responde: {exc}")
         else:
             cargado = bool(cuerpo.get("modelo_cargado"))
             salida = IaSalida(
                 disponible=cargado,
                 detalle=(
-                    "Servicio de inferencia activo y modelo cargado."
+                    "La IA está activa y el modelo cargado."
                     if cargado
-                    else "El servicio responde pero el modelo no está cargado."
+                    else "La IA responde, pero el modelo no está cargado."
                 ),
             )
     return estado.cache_ia.guardar(salida)
@@ -212,7 +212,7 @@ def consultar_calidad(estado: EstadoAplicacion) -> CalidadModeloSalida:
     if estado.cliente_ia is None:
         salida = CalidadModeloSalida(
             disponible=False,
-            motivo="Sin servicio de inferencia configurado.",
+            motivo="Sin servicio de IA configurado.",
             nota=NOTA_CALIDAD,
         )
         return estado.cache_calidad.guardar(salida)
@@ -221,12 +221,12 @@ def consultar_calidad(estado: EstadoAplicacion) -> CalidadModeloSalida:
         cuerpo = estado.cliente_ia.modelo()
     except ErrorDeInferencia as exc:
         salida = CalidadModeloSalida(
-            disponible=False, motivo=f"Inferencia no disponible: {exc}", nota=NOTA_CALIDAD
+            disponible=False, motivo=f"La IA no responde: {exc}", nota=NOTA_CALIDAD
         )
         return estado.cache_calidad.guardar(salida)
     except Exception as exc:  # noqa: BLE001 — idem
         salida = CalidadModeloSalida(
-            disponible=False, motivo=f"Inferencia no disponible: {exc}", nota=NOTA_CALIDAD
+            disponible=False, motivo=f"La IA no responde: {exc}", nota=NOTA_CALIDAD
         )
         return estado.cache_calidad.guardar(salida)
 
@@ -237,7 +237,7 @@ def consultar_calidad(estado: EstadoAplicacion) -> CalidadModeloSalida:
         # o un servicio que no es el nuestro. Se informa, no se interpreta.
         salida = CalidadModeloSalida(
             disponible=False,
-            motivo=f"Respuesta inesperada del servicio de inferencia: {exc}",
+            motivo=f"Respuesta inesperada del servicio de IA: {exc}",
             nota=NOTA_CALIDAD,
         )
     return estado.cache_calidad.guardar(salida)
@@ -302,7 +302,7 @@ def configuracion_activa(estado: EstadoAplicacion) -> ConfiguracionVigente:
     except Exception as exc:  # noqa: BLE001 — PostgreSQL caído no puede tumbar la API
         return ConfiguracionVigente(
             configuracion=configuracion_por_defecto(),
-            avisos=[f"PostgreSQL no responde: se usan los valores por defecto ({exc})."],
+            avisos=[f"La base de datos no responde: se usan los valores por defecto ({exc})."],
             postgres_ok=False,
             por_defecto=True,
         )
@@ -310,7 +310,7 @@ def configuracion_activa(estado: EstadoAplicacion) -> ConfiguracionVigente:
         return ConfiguracionVigente(
             configuracion=configuracion_por_defecto(),
             avisos=[
-                "Sin fila de configuración en la base de datos: valores por "
+                "Sin configuración guardada en la base de datos: valores por "
                 "defecto (Modo Asesor, perfil MODERATE)."
             ],
             postgres_ok=True,

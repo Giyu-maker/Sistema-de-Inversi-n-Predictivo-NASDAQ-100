@@ -74,7 +74,7 @@ class TestVerde:
         assert cuerpo["estado"] == "VERDE"
         assert cuerpo["ultima_prediccion"]["trend_prediction"] == "STABLE"
         assert cuerpo["senal"]["operable"] is False  # STABLE nunca opera (D7)
-        assert "STABLE nunca es una señal operable" in cuerpo["senal"]["motivo"]
+        assert "Sin movimiento esperado" in cuerpo["senal"]["motivo"]
 
     def test_ventana_incompleta_no_pone_amarillo(self) -> None:
         # Decisión D6: son las primeras 12 velas del día, el sistema está
@@ -106,7 +106,7 @@ class TestAmarillo:
         ).get("/api/status").json()
 
         assert cuerpo["estado"] == "AMARILLO"
-        assert "IA no disponible" in cuerpo["motivo"]
+        assert "La IA no responde" in cuerpo["motivo"]
         assert cuerpo["ia"]["disponible"] is False
 
     def test_servicio_vivo_pero_modelo_sin_cargar(self) -> None:
@@ -128,7 +128,7 @@ class TestAmarillo:
         ).get("/api/status").json()
 
         assert cuerpo["estado"] == "AMARILLO"
-        assert "es UP, no STABLE" in cuerpo["motivo"]
+        assert "es tendencia al alza" in cuerpo["motivo"]
         # Y la señal se evalúa igual: 0,9 ≥ 0,75 del perfil por defecto.
         assert cuerpo["senal"]["operable"] is True
         assert cuerpo["senal"]["umbral"] == 0.75
@@ -144,10 +144,10 @@ class TestAmarillo:
         ).get("/api/status").json()
 
         assert cuerpo["estado"] == "AMARILLO"
-        assert "PostgreSQL" in cuerpo["motivo"]
+        assert "base de datos no responde" in cuerpo["motivo"]
         # La configuración mostrada es la por defecto y LO DICE.
         assert cuerpo["perfil"]["por_defecto"] is True
-        assert any("PostgreSQL no responde" in aviso for aviso in cuerpo["avisos"])
+        assert any("base de datos no responde" in aviso for aviso in cuerpo["avisos"])
 
 
 class TestCerrado:
@@ -184,7 +184,7 @@ class TestConfiguracion:
         assert cuerpo["perfil"]["nombre"] == "MODERATE"
         assert cuerpo["perfil"]["umbral_confianza"] == 0.75
         assert cuerpo["perfil"]["por_defecto"] is True
-        assert any("Sin fila de configuración" in a for a in cuerpo["avisos"])
+        assert any("Sin configuración guardada" in a for a in cuerpo["avisos"])
 
     def test_con_fila_usa_el_perfil_guardado(self) -> None:
         config = ConfiguracionesFalso(

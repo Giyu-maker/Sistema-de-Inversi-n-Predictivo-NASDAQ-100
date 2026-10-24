@@ -40,6 +40,16 @@ PERFIL_POR_DEFECTO = "MODERATE"
 
 TENDENCIAS_VALIDAS: tuple[str, ...] = ("UP", "DOWN", "STABLE")
 
+#: Traducción a lenguaje llano de las tendencias para los textos que lee el
+#: operador (AGENTS.md §5.5, brief Fase B2 regla 1). Los campos estructurados
+#: (`tendencia`, `trend_prediction`) siguen exigiendo los enums del contrato;
+#: esto solo pinta palabras en el `motivo`.
+EN_LLANO: dict[str, str] = {
+    "UP": "al alza",
+    "DOWN": "a la baja",
+    "STABLE": "sin movimiento",
+}
+
 
 @dataclass(frozen=True)
 class Senal:
@@ -93,8 +103,8 @@ def evaluar_senal(tendencia: str, confianza: float, perfil: str) -> Senal:
         return Senal(
             operable=False,
             motivo=(
-                "STABLE nunca es una señal operable: el modelo no anticipa "
-                "movimiento aprovechable, con cualquier nivel de confianza."
+                "Sin movimiento esperado: el modelo no anticipa movimiento "
+                "aprovechable, con cualquier nivel de confianza."
             ),
             umbral=umbral,
             perfil=perfil,
@@ -116,8 +126,8 @@ def evaluar_senal(tendencia: str, confianza: float, perfil: str) -> Senal:
     return Senal(
         operable=True,
         motivo=(
-            f"Señal operable: {tendencia} con confianza {_numero(confianza)} "
-            f"≥ umbral {_numero(umbral)} del perfil {perfil}."
+            f"Señal operable: tendencia {EN_LLANO[tendencia]} con confianza "
+            f"{_numero(confianza)} ≥ umbral {_numero(umbral)} del perfil {perfil}."
         ),
         umbral=umbral,
         perfil=perfil,

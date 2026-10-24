@@ -98,7 +98,7 @@ def instalar_manejadores(app: FastAPI) -> None:
         return JSONResponse(
             status_code=503,
             content={
-                "mensaje": "Servicio de inferencia no disponible.",
+                "mensaje": "La IA no responde. Consulte al administrador de TI.",
                 "detalle": str(exc),
             },
         )
