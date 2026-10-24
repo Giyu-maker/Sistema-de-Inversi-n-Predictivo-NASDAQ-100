@@ -27,6 +27,8 @@ export interface UsoHistorial {
   mensaje: string | null
   cargandoMas: boolean
   puedeCargarMas: boolean
+  /** Avisos del backend en la última página leída (texto llano, sin tocar). */
+  avisos: string[]
   /** Pide el siguiente tramo y lo agrega (sin duplicar). */
   cargarMas: () => void
   /** Reinicia en la página 0 (misma llave). */
@@ -52,6 +54,7 @@ export function useHistorial(llave: number | null | undefined): UsoHistorial {
   const [fase, setFase] = useState<Fase>('cargando')
   const [mensaje, setMensaje] = useState<string | null>(null)
   const [cargandoMas, setCargandoMas] = useState(false)
+  const [avisos, setAvisos] = useState<string[]>([])
   const [impulso, setImpulso] = useState(0)
   const refrescar = useCallback(() => setImpulso((n) => n + 1), [])
   const peticion = useRef<AbortController | null>(null)
@@ -81,6 +84,7 @@ export function useHistorial(llave: number | null | undefined): UsoHistorial {
         setTotal(respuesta.datos.total)
         setFase('ok')
         setMensaje(null)
+        setAvisos(respuesta.datos.avisos)
         setFilas((previas) => mezclar(previas, respuesta.datos.predicciones, false))
       } else {
         setFase('error')
@@ -118,6 +122,7 @@ export function useHistorial(llave: number | null | undefined): UsoHistorial {
         setTotal(respuesta.datos.total)
         setFase('ok')
         setMensaje(null)
+        setAvisos(respuesta.datos.avisos)
         setFilas((previas) => mezclar(previas, respuesta.datos.predicciones, true))
       } else {
         setFase('error')
@@ -133,6 +138,7 @@ export function useHistorial(llave: number | null | undefined): UsoHistorial {
     mensaje,
     cargandoMas,
     puedeCargarMas: filas.length < total,
+    avisos,
     cargarMas,
     refrescar,
   }

@@ -141,3 +141,17 @@ export function formatearPorcentaje(valorPct: number, decimales = 1): string {
 export function formatearRatio(ratio: number, decimales = 1): string {
   return formatearPorcentaje(ratio * 100, decimales)
 }
+
+/**
+ * Porcentaje SIEMPRE con signo explícito, para rendimientos y variaciones:
+ * «+0,03 %» / «−1,25 %». El signo es texto (neutro: ni verde ni rojo, el rojo
+ * lo reserva el Kill-Switch); el cero se firma solo como «0,00 %». El signo
+ * menos es U+2212 (−), no el guion del teclado: comparte ancho con el más en
+ * las cifras tabulares y no lee como raya de tabla.
+ */
+export function formatearPorcentajeFirmado(valorPct: number, decimales = 2): string {
+  const absoluto = formatearPorcentaje(Math.abs(valorPct), decimales)
+  if (valorPct > 0) return `+${absoluto}`
+  if (valorPct < 0) return `−${absoluto}`
+  return absoluto
+}

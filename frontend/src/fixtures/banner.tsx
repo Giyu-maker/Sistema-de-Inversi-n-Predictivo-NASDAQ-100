@@ -14,7 +14,9 @@ export function BannerPruebas(): ReactElement {
   return (
     <div
       role="status"
-      className="fixed inset-x-0 top-0 z-50 border-b border-amber-300 bg-amber-100 px-4 py-1.5 text-center text-xs font-medium tracking-normal text-amber-950"
+      // En flujo normal, sin `fixed`: el banner se desplaza con la página y
+      // no tapa la cabecera adherida (que se ancla al borde al pasar).
+      className="border-b border-amber-300 bg-amber-100 px-4 py-1.5 text-center text-xs font-medium tracking-normal text-amber-950"
     >
       DATOS DE PRUEBA · escenario de prueba «{escenario}» — cifras simuladas,
       no son datos reales del mercado.

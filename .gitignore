@@ -12,6 +12,10 @@ __pycache__/
 # Salidas generadas localmente
 graphify-out/
 
+# Capturas de verificación de la Fase B2 (material de sesión, no entregable:
+# se regeneran con el patrón de Chromium headless descrito en el informe)
+docs/capturas-b2/
+
 # Artefactos de IA: se generan reentrenando, no se versionan (ver AGENTS.md §15)
 models/
 

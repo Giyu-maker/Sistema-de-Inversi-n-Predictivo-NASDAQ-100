@@ -46,7 +46,7 @@ Flujo: `Twelve Data API (QQQ) → IngestionEngine (M2) → InfluxDB (M2) → Loc
 ## 4. Stack tecnológico
 
 - **Backend:** Python 3.12, FastAPI, Pydantic estricto, `psycopg2` (PostgreSQL síncrono), `influxdb-client` (async), Docker Compose.
-- **Frontend:** React + Vite + Tailwind CSS + shadcn/ui, TypeScript estricto, Zod + React Hook Form para validación, Recharts para gráficos.
+- **Frontend:** React + Vite + Tailwind CSS + shadcn/ui, TypeScript estricto, Zod + React Hook Form para validación. Gráficos interactivos con **Recharts** — este ítem proviene del **backlog Ítem 8** (RF-05), no del SRS: §5.1 solo fija React, Vite, Tailwind CSS y shadcn/ui.
 - **IA:** PyTorch con NVIDIA CUDA v12+.
 - **Bases de datos:** PostgreSQL 16 (relacional/auditoría), InfluxDB 2.7 (series temporales, lenguaje Flux).
 - **Broker:** Interactive Brokers Gateway (TWS API) vía TCP local, cuenta Sandbox en desarrollo/Sprint 4.
