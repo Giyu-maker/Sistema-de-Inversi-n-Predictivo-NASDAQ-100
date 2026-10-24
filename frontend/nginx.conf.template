@@ -1,0 +1,54 @@
+# RiTech-NASDAQ100 — Nginx del dashboard (M2).
+#
+# Mismo origen para la UI y su API (contrato de la Fase B2): la página y
+# `/api/…` salen de este Nginx, que hace de proxy hacia el servicio `api`
+# (red host, 127.0.0.1:8010 — el API sigue sin exponerse, REST-05).
+#
+# ${WEB_BIND} lo sustituye el entrypoint oficial de la imagen con envsubst
+# (solo variables definidas en el entorno: `$host`, `$uri`… de nginx no se
+# tocan). 127.0.0.1 por defecto; la LAN se activa con WEB_BIND=0.0.0.0.
+# Este fichero es una PLANTILLA: el binario nginx usa `$var` de nginx, por
+# eso no lleva `$$` ni nada especial.
+
+server {
+    listen ${WEB_BIND}:8080;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # --- gzip: los chunks de JS/CSS pesan cientos de kB en crudo ----------
+    gzip on;
+    gzip_comp_level 6;
+    gzip_min_length 1024;
+    gzip_types text/plain text/css application/javascript application/json image/svg+xml;
+    gzip_vary on;
+
+    # --- Assets con hash en el nombre (Vite): caché larga e inmutable -----
+    location /assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        try_files $uri =404;
+    }
+
+    # --- index.html SIN caché: es quien referencia los hashes de arriba ----
+    location = /index.html {
+        add_header Cache-Control "no-store, no-cache, must-revalidate";
+    }
+
+    # --- Raíz y cualquier ruta suelta → index.html ------------------------
+    location / {
+        try_files $uri /index.html;
+    }
+
+    # --- Proxy de la API (mismo origen en el navegador) -------------------
+    location /api/ {
+        proxy_pass http://127.0.0.1:8010;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 30s;
+    }
+}

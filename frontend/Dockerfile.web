@@ -1,0 +1,41 @@
+# syntax=docker/dockerfile:1
+# RiTech-NASDAQ100 — imagen web de M2: build del dashboard + Nginx.
+#
+# Multi-etapa (decisión cerrada en el brief de la Fase B2): Node construye,
+# Nginx sirve. La imagen final no lleva ni Node ni devDependencies — solo
+# `dist/` y la configuración de Nginx.
+
+# ---------------------------------------------------------------------------
+# Etapa 1 — build (Node). Se instala TODO el lockfile, devDependencies
+# incluidas: `npm run build` ejecuta `tsc -b && vite build` y tanto
+# `typescript` como `vite` y sus plugins son devDependencies. Si esta etapa
+# falla con "tsc: not found", alguien puso `npm ci --omit=dev`.
+# ---------------------------------------------------------------------------
+FROM node:26.12.1-alpine AS build
+
+WORKDIR /app
+
+# Dependencias primero: cambian menos que el código, así un deploy de solo
+# código reutiliza esta capa de caché.
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build
+
+# ---------------------------------------------------------------------------
+# Etapa 2 — runtime (Nginx). Solo el build y la configuración.
+# ---------------------------------------------------------------------------
+FROM nginx:1.30.6-alpine
+
+COPY --from=build /app/dist /usr/share/nginx/html
+COPY nginx.conf.template /etc/nginx/templates/default.conf.template
+
+# ${WEB_BIND} decide la interfaz de escucha del `server` (el entrypoint de la
+# imagen oficial la sustituye con envsubst sobre las plantillas). Por defecto,
+# solo loopback: la exposición a la LAN es opt-in vía WEB_BIND=0.0.0.0.
+ENV WEB_BIND=127.0.0.1
+
+# 8080 en el host (red host en docker-compose): 80 está reservado y 8086/8010
+# ya los usan InfluxDB y el API.
+EXPOSE 8080

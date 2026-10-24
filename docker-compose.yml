@@ -1,6 +1,7 @@
 # RiTech-NASDAQ100 — Infraestructura de la Máquina 2 (Nodo Central)
 #   Sprint 2, Ítem 4 : PostgreSQL 16 (relacional/auditoría) + InfluxDB 2.7 (velas 5M)
 #   Sprint 3, Fase B : `api` (API de solo lectura) + `scheduler` (ciclo de 5 min)
+#                     + `web`  (Nginx del dashboard, Fase B2.5)
 # Todo junto: docker compose up -d --build   (requiere Docker en la Máquina 2)
 # Los valores secretos salen de .env (no commiteado; plantilla en .env.m2.example),
 # y la clave maestra de criptografía de .env.local (gitignored, permiso 600).
@@ -127,6 +128,41 @@ services:
     # (`docker compose logs -f scheduler`), y sus efectos sobre los servicios
     # los cuenta /api/status del contenedor api.
 
+  # ---------------------------------------------------------------------------
+  # Sprint 3, Fase B2.5 — dashboard servido por Nginx (frontend/Dockerfile.web)
+  # ---------------------------------------------------------------------------
+  # Red host, igual que `api`, y no es una excepción: el Nginx debe alcanzar
+  # al API en 127.0.0.1:8010 para que la UI y `/api/…` compartan ORIGEN en el
+  # navegador (contrato de la Fase B2). Con red de puente haría falta
+  # host.docker.internal, y el API solo escucha en loopback (REST-05) — no hay
+  # camino sin exponerlo.
+  #
+  # Exposición: ${WEB_BIND:-127.0.0.1} por defecto = solo esta máquina. Para
+  # que la estación de la operadora (M3) abra el panel:
+  #     WEB_BIND=0.0.0.0 docker compose up -d web
+  # (más el puerto abierto en el firewall de M2, ver docs/despliegue.md).
+  web:
+    build:
+      context: frontend
+      dockerfile: Dockerfile.web
+    container_name: ritech-web
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      WEB_BIND: ${WEB_BIND:-127.0.0.1}
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      # El índice en loopback: comprueba que Nginx escucha. NO se comprueba
+      # /api/health a través del proxy aquí: un API caído no debe reiniciar
+      # el web (eso lo dice /api/status y `docker compose ps`).
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 volumes:
   pgdata:
     name: ritech-pgdata
@@ -142,7 +178,7 @@ volumes:
 #
 #   1. Construir y levantar todo:
 #        docker compose up -d --build
-#   2. Estado (los cuatro contenedores deben quedar "healthy" o "running";
+#   2. Estado (los cinco contenedores deben quedar "healthy" o "running";
 #      `scheduler` no declara healthcheck, ver su servicio):
 #        docker compose ps
 #   3. PostgreSQL responde:
@@ -152,10 +188,16 @@ volumes:
 #   5. El API responde (solo loopback en el host):
 #        curl -f http://127.0.0.1:8010/api/health
 #        curl -s http://127.0.0.1:8010/api/status
-#   6. El ciclo corre cada 5 min:
+#   6. El dashboard responde por Nginx (mismo origen, puerta 8080):
+#        curl -f http://127.0.0.1:8080/
+#        curl -s http://127.0.0.1:8080/api/status   # → proxy hacia el API
+#   7. El ciclo corre cada 5 min:
 #        docker compose logs -f scheduler
-#   7. Detener (los volúmenes persistentes conservan los datos):
+#   8. Detener (los volúmenes persistentes conservan los datos):
 #        docker compose down
+#
+# Exposición a la LAN (opt-in, nunca por defecto): WEB_BIND=0.0.0.0 y luego
+# abrir el puerto en el firewall de M2 — pasos en docs/despliegue.md.
 #
 # Si `api` o `scheduler` quedan "unhealthy"/reiniciándose, el primer sitio a
 # mirar es la plantilla de entorno: `.env` (faltan credenciales con `:?`) y

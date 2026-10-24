@@ -1,0 +1,6 @@
+# No entra en el contexto de build de Dockerfile.web:
+node_modules
+dist
+*.tsbuildinfo
+.env
+.env.*
