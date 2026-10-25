@@ -46,6 +46,9 @@ cargar_entorno() {
   # shellcheck disable=SC1091
   [ -f .env.local ] && source .env.local
   set +a
+  # Artefacto del modelo: cada máquina puede fijarlo en .env.local; si nadie
+  # lo dice, el directorio `models/` del repo (con su active.json).
+  export MODEL_PATH="${MODEL_PATH:-models}"
 }
 
 arrancar() {

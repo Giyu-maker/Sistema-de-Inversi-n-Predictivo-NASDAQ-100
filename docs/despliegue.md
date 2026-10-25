@@ -481,6 +481,25 @@ curl -sf http://127.0.0.1:8010/api/health
 La API de esta fase es **SOLO GET y sin autenticación** (CR-004): login,
 roles, escrituras y Kill-Switch llegan en el Sprint 4.
 
+### 11.1 Arranque de sesión del lunes (26/10/2026) — 5 pasos
+
+1. Parar lo que quede de la semana anterior: `scripts/sesion.sh stop`
+   (equivale a matar la inferencia por su PID y `docker compose down`).
+2. Arrancar todo de una vez: `scripts/sesion.sh start` — inferencia en 2.º
+   plano (`/tmp/ritech-inferencia.log` + PID, escucha en la IP del puente de
+   Docker, nunca `0.0.0.0`), espera `/health`, vuelca `.env.sesion` con
+   `INFERENCE_URL` y levanta Docker esperando `/api/health`.
+3. Comprobar con `scripts/sesion.sh estado`: inferencia «corriendo», API
+   «salud: OK», última vela y última predicción — y ahí mismo aparecen los
+   errores recientes de los logs si los hubiera.
+4. A partir de las 08:30 hora Colombia (09:30 ET) llegan velas nuevas cada
+   5 min y, con ellas, ventana y predicción; la recuperación de huecos corre
+   sola en cada tick (cuota 8/min y 800/día, insert-if-absent, sin duplicar).
+5. Vigilar los primeros minutos con `docker compose logs -f scheduler`; si
+   todo va bien, no hay más pasos: el stack queda solo hasta el cierre
+   (15:00 hora Colombia) — el arranque en frío completo está verificado
+   (`docker compose down` + `scripts/sesion.sh start`).
+
 ---
 
 ## 12. Qué queda fuera (Fase B2 y Sprint 4)

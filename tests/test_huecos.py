@@ -163,6 +163,23 @@ class TestDeteccionDeHueco:
         assert informe.motivo == "sin-hueco"
         assert proveedor.llamadas == []
 
+    def test_sesion_completa_en_verano_no_pide(self) -> None:
+        # Regresión: viernes 23/10/2026 (EDT) completo (78 velas true
+        # 09:30–15:55 ET) y hoy domingo → sin-hueco, sin gastar crédito.
+        # Ojo con el `fecha` del API: se formatea en hora Colombia (UTC−5,
+        # regla de SRS) y la sesión SE VE como 08:30–14:55; el timestamp
+        # guarda la hora ET verdadera y a eso (no al texto) se comparan los
+        # slots. Confiar en el texto llevó a desfasar la detección 1 h.
+        existentes = set(_slots(date(2026, 10, 23)))
+        engine, proveedor = _engine_con(existentes)
+
+        informe = asyncio.run(
+            recuperar_hueco(engine, CuotaBasica(), ahora=_ny(2026, 10, 25, 12, 0))
+        )
+
+        assert informe.motivo == "sin-hueco"
+        assert proveedor.llamadas == []
+
     def test_sin_datos_previos_es_trabajo_del_backfill(self) -> None:
         engine, proveedor = _engine_con(set())
 
