@@ -18,6 +18,8 @@
  * resultado, abajo tendencia y confianza.
  */
 import {
+  Check,
+  X,
   ArrowDown,
   ArrowUp,
   Info,
@@ -66,17 +68,32 @@ function pintarResultado(prediccion: Prediccion): React.ReactNode {
       resultado.etiqueta !== null
         ? (DIRECCIONES[resultado.etiqueta] ?? resultado.etiqueta.toLowerCase())
         : null
+    // P2.1: con resultado, se dice si acertó o falló — ícono y texto, sin
+    // color semántico (verde/ámbar/rojo siguen siendo del estado del sistema).
+    const acerto = resultado.etiqueta === prediccion.trend_prediction
     return (
       <>
         <span className="dato">{formatearPorcentajeFirmado(resultado.retorno_pct)}</span>
         {direccion !== null ? (
           <span className="text-muted-foreground"> · {direccion}</span>
         ) : null}
+        <span className="ml-2 inline-flex items-center gap-1 text-muted-foreground">
+          {acerto ? (
+            <Check weight="bold" className="h-3.5 w-3.5" aria-hidden="true" />
+          ) : (
+            <X weight="bold" className="h-3.5 w-3.5" aria-hidden="true" />
+          )}
+          {acerto ? 'acertó' : 'falló'}
+        </span>
       </>
     )
   }
   if (resultado.estado === 'PENDIENTE') {
     return <span className="text-muted-foreground">Pendiente</span>
+  }
+  if (resultado.estado === 'SIN_DATOS') {
+    // P2.1: horizonte dentro de la sesión pero sin velas que medir.
+    return <span className="text-muted-foreground">Sin datos para evaluar</span>
   }
   if (resultado.estado === 'NO_APLICA') {
     return <span className="text-muted-foreground">No aplica</span>
@@ -149,11 +166,13 @@ export function Historial({ historial }: PropsHistorial) {
               const tendencia = TENDENCIAS[prediccion.trend_prediction]
               return (
                 <li key={prediccion.id} className="border-b border-border py-2.5 last:border-0">
-                  <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-                    <span className="dato text-xs text-muted-foreground">{prediccion.fecha}</span>
-                    <span className="text-sm">{pintarResultado(prediccion)}</span>
+                  {/* P2.4: estructura FIJA de dos líneas (fecha y resultado /
+                      tendencia y confianza) — no se reflowea a 390 px. */}
+                  <div className="flex items-baseline justify-between gap-x-3 whitespace-nowrap">
+                    <span className="dato shrink-0 text-xs text-muted-foreground">{prediccion.fecha}</span>
+                    <span className="min-w-0 truncate text-sm">{pintarResultado(prediccion)}</span>
                   </div>
-                  <div className="mt-0.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+                  <div className="mt-0.5 flex items-center gap-x-4 whitespace-nowrap text-sm">
                     <span className={`flex items-center gap-1.5 ${tendencia?.clase ?? 'text-muted-foreground'}`}>
                       {iconoTendencia(prediccion.trend_prediction)}
                       {tendencia?.texto ?? prediccion.trend_prediction}

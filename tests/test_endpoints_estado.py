@@ -159,8 +159,12 @@ class TestCerrado:
         cuerpo = cliente_de_prueba(estado).get("/api/status").json()
 
         assert cuerpo["estado"] == "CERRADO"
-        assert cuerpo["motivo"] == "Mercado cerrado: Fin de semana."
-        assert cuerpo["mercado"]["motivo"] == "Fin de semana"
+        assert cuerpo["motivo"] == (
+            "Fin de semana · reabre el lunes 19/10 a las 09:30 ET (08:30 hora de Colombia)."
+        )
+        assert cuerpo["mercado"]["motivo"] == (
+            "Fin de semana · reabre el lunes 19/10 a las 09:30 ET (08:30 hora de Colombia)"
+        )
 
     def test_cerrado_no_acumula_causas_de_sesion(self) -> None:
         # Con la IA caída y el dato viejo, fuera de sesión el motivo sigue
@@ -173,7 +177,9 @@ class TestCerrado:
         cuerpo = cliente_de_prueba(estado).get("/api/status").json()
 
         assert cuerpo["estado"] == "CERRADO"
-        assert cuerpo["motivo"] == "Mercado cerrado: Fin de semana."
+        assert cuerpo["motivo"] == (
+            "Fin de semana · reabre el lunes 19/10 a las 09:30 ET (08:30 hora de Colombia)."
+        )
         assert cuerpo["ia"]["disponible"] is False  # el dato de la IA se informa
 
 

@@ -25,7 +25,7 @@ import os
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 
-from src.utils.fechas import ZONA_MERCADO
+from src.utils.fechas import ZONA_COLOMBIA, ZONA_MERCADO
 
 logger = logging.getLogger(__name__)
 
@@ -84,18 +84,60 @@ def mercado(ahora: datetime, feriados: frozenset[date] = frozenset()) -> EstadoM
     dia = local.date()
 
     if local.weekday() >= 5:
-        return EstadoMercado(abierto=False, motivo="Fin de semana")
+        apertura = _proxima_apertura(dia, feriados)
+        extra = f" · {_frase_reapertura(apertura)}" if apertura else ""
+        return EstadoMercado(abierto=False, motivo=f"Fin de semana{extra}")
     if dia in feriados:
+        apertura = _proxima_apertura(dia, feriados)
+        extra = f" · {_frase_reapertura(apertura)}" if apertura else ""
         return EstadoMercado(
-            abierto=False, motivo=f"Feriado NYSE ({dia.strftime('%d/%m/%Y')})", feriado=True
+            abierto=False,
+            motivo=f"Feriado NYSE ({dia.strftime('%d/%m/%Y')}){extra}",
+            feriado=True,
         )
     if local.time() < APERTURA:
+        # P2.2: la frase aporta la hora real de apertura en las dos zonas.
+        hoy = datetime.combine(dia, APERTURA, tzinfo=ZONA_MERCADO)
+        col = hoy.astimezone(ZONA_COLOMBIA).strftime("%H:%M")
         return EstadoMercado(
-            abierto=False, motivo=f"Antes de la apertura ({HORARIO_REGULAR_TXT})"
+            abierto=False,
+            motivo=f"Antes de la apertura: hoy a las 09:30 ET ({col} hora de Colombia)",
         )
     if local.time() >= CIERRE:
-        return EstadoMercado(abierto=False, motivo=f"Después del cierre ({HORARIO_REGULAR_TXT})")
+        cierre = datetime.combine(dia, CIERRE, tzinfo=ZONA_MERCADO)
+        col = cierre.astimezone(ZONA_COLOMBIA).strftime("%H:%M")
+        apertura = _proxima_apertura(dia, feriados)
+        extra = f" · {_frase_reapertura(apertura)}" if apertura else ""
+        return EstadoMercado(
+            abierto=False,
+            motivo=f"Después del cierre (16:00 ET, {col} hora de Colombia){extra}",
+        )
     return EstadoMercado(abierto=True, motivo="Horario regular de mercado")
+
+
+# -- frase de reapertura (P2.2): calculada con la fecha real, nunca a mano -----
+
+_DIAS_SEMANA_ES = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
+
+
+def _proxima_apertura(dia: date, feriados: frozenset[date]) -> datetime | None:
+    """09:30 ET del próximo día hábil de la NYSE después de `dia`."""
+    for atras in range(1, 9):
+        candidato = dia + timedelta(days=atras)
+        if candidato.weekday() < 5 and candidato not in feriados:
+            return datetime.combine(candidato, APERTURA, tzinfo=ZONA_MERCADO)
+    return None
+
+
+def _frase_reapertura(apertura: datetime) -> str:
+    """«reabre el lunes 02/11 a las 09:30 ET (08:30 hora de Colombia)».
+
+    La hora de Colombia se deriva del instante (EDT/EST lo resuelve la zona),
+    así que el 01/11 el texto solo cambia de 08:30 a 09:30 solo.
+    """
+    nombre = _DIAS_SEMANA_ES[apertura.weekday()]
+    col = apertura.astimezone(ZONA_COLOMBIA).strftime("%H:%M")
+    return f"reabre el {nombre} {apertura.strftime('%d/%m')} a las 09:30 ET ({col} hora de Colombia)"
 
 
 # -- ventana de consulta de la fuente (P1.9) -----------------------------------

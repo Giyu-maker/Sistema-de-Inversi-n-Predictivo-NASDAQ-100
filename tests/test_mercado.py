@@ -57,7 +57,9 @@ class TestHorarioRegular:
     def test_fin_de_semana_cierra_el_estado(self, dia: int) -> None:
         estado = mercado(_en_et(11, 0, dia=dia))
         assert estado.abierto is False
-        assert estado.motivo == "Fin de semana"
+        assert estado.motivo == (
+            "Fin de semana · reabre el lunes 19/10 a las 09:30 ET (08:30 hora de Colombia)"
+        )
         assert estado.feriado is False
 
 

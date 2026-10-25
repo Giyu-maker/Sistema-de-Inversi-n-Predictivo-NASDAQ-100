@@ -38,9 +38,13 @@ INTERVALO_VELA_MS = 5 * 60 * 1000
 #: El horizonte son `HORIZON` velas después del cierre de la ventana.
 HORIZON_MS = HORIZON * INTERVALO_VELA_MS
 
+#: Estados del resultado real (decisión D6 + revisión P2.1):
+#: `SIN_DATOS` existe porque «No aplica» engañaba en las filas cuyo horizonte
+#: SÍ está dentro de la sesión pero faltan velas para medirlo.
 ESTADO_DISPONIBLE = "DISPONIBLE"
 ESTADO_PENDIENTE = "PENDIENTE"
 ESTADO_NO_APLICA = "NO_APLICA"
+ESTADO_SIN_DATOS = "SIN_DATOS"
 
 
 @dataclass(frozen=True)
@@ -81,14 +85,16 @@ def resultado_real(
     # 2) ¿sigue dentro de su sesión?
     sesion, indice = _sesion_que_contiene(velas, prediction_time)
     if sesion is None:
+        # P2.1: dentro de sesión pero sin velas que medir → NO es «no
+        # aplica» (que se reserva para el horizonte que cruza el cierre).
         return ResultadoReal(
-            estado=ESTADO_NO_APLICA,
-            motivo="No hay velas de la sesión de la predicción en el rango consultado.",
+            estado=ESTADO_SIN_DATOS,
+            motivo="Sin datos para evaluar: no hay velas de la sesión de la predicción en el rango consultado.",
         )
     if indice < 0:
         return ResultadoReal(
-            estado=ESTADO_NO_APLICA,
-            motivo="La vela de cierre de la predicción no aparece en el rango consultado.",
+            estado=ESTADO_SIN_DATOS,
+            motivo="Sin datos para evaluar: la vela de la predicción no aparece en el rango consultado.",
         )
     fin_horizonte = indice + HORIZON
     if fin_horizonte >= len(sesion) or sesion[fin_horizonte].timestamp != prediction_time + HORIZON_MS:
@@ -101,8 +107,8 @@ def resultado_real(
     inicio = indice - WINDOW + 1
     if inicio < 0:
         return ResultadoReal(
-            estado=ESTADO_NO_APLICA,
-            motivo="Faltan velas anteriores a la predicción en el rango consultado.",
+            estado=ESTADO_SIN_DATOS,
+            motivo="Sin datos para evaluar: faltan velas anteriores a la predicción en el rango consultado.",
         )
 
     retorno = forward_return_pct(sesion, inicio)

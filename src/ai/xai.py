@@ -206,17 +206,16 @@ def build_rationale(
     confianza = float(probabilities[predicted_index]) * 100.0
 
     return (
-        f"Atribución de la decisión (gradiente × entrada) sobre una ventana de "
-        f"{WINDOW} velas. "
-        f"Reparto del peso total por grupo: {reparto}. "
-        f"El grupo de mayor peso fue «{principal}» ({_es(peso_principal)} %) y el "
-        f"menor «{menor}» ({_es(peso_menor)} %). "
-        f"Dentro de «{principal}», lo que más pesó fue "
-        f"{label_of(feature_names[j_top])} ({_es(peso_feature)} % del total). "
-        f"Las ventanas con más peso fueron la {top_pos_txt} de {WINDOW}, es decir "
-        f"las más recientes de la ventana observada. "
-        f"Probabilidades de clase: {probs_txt}. "
-        f"Decisión: {decision} con {_es(confianza)} % de confianza. "
+        # P2.3: PRIMERO la conclusión en lenguaje llano, el MÉTODO al final.
+        f"Decisión: {decision} con {_es(confianza)} % de confianza; pesó más "
+        f"«{principal}» ({_es(peso_principal)} % del peso total) y menos «{menor}» "
+        f"({_es(peso_menor)} %). Probabilidades de clase: {probs_txt}. "
+        f"Método: atribución por gradiente × entrada sobre una ventana de "
+        f"{WINDOW} velas — reparto del peso total por grupo: {reparto}; dentro de "
+        f"«{principal}», lo que más pesó fue {label_of(feature_names[j_top])} "
+        f"({_es(peso_feature)} % del total). Las ventanas con más peso fueron la "
+        f"{top_pos_txt} de {WINDOW}, es decir las más recientes de la ventana "
+        f"observada. "
         f"Nota para auditoría (RF-303): este registro describe qué ponderó el "
         f"modelo en su decisión; no es una causalidad de mercado ni una "
         f"previsión justificada del comportamiento futuro del índice."

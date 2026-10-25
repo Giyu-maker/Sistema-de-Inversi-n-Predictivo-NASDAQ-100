@@ -65,6 +65,8 @@ export function TarjetaSenal({ estado, calidad }: PropsTarjetaSenal) {
   // P1.1: el veredicto es el titular (enmarcado solo si es operable) y la
   // dirección baja al subtítulo en color NORMAL con flecha (P1.2).
   const operable = esTendencia && senal?.operable === true
+  // P2.6: posición del rombo acotada a la pista (a 99,99 % no asoma).
+  const confianzaLimitada = Math.min(confianza ?? 0, 1)
   const confianzaBaja =
     confianza !== null && esTendencia && confianza < CONFIANZA_BAJA
   const previa =
@@ -148,7 +150,11 @@ export function TarjetaSenal({ estado, calidad }: PropsTarjetaSenal) {
                 />
                 <div
                   className="absolute top-1/2 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rotate-45 bg-foreground transition-[left] duration-500 ease-out motion-reduce:transition-none"
-                  style={{ left: `${Math.min(confianza ?? 0, 1) * 100}%` }}
+                  // P2.6: calc() que corre el centro al ancho menos el del
+                  // rombo: el marcador queda SIEMPRE dentro de la pista.
+                  style={{
+                    left: `calc(${confianzaLimitada * 100}% - ${confianzaLimitada * 10}px + 5px)`,
+                  }}
                 />
               </div>
               {/* P1.3: leyenda con las MISMAS formas que las marcas — ◆ la del

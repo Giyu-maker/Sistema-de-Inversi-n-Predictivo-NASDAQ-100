@@ -95,10 +95,69 @@ const MOTIVO_BLOQUEO =
 const IA_OK = 'La IA está activa y el modelo cargado.'
 const HORARIO = '09:30-16:00 ET'
 const MOTIVO_ABIERTO = 'Horario regular de mercado'
-const MOTIVO_CIERRADO = 'Después del cierre (09:30-16:00 ET)'
 const MOTIVO_VERDE = 'Dato actualizado, IA disponible y última predicción sin movimiento.'
-const MOTIVO_CIERRA = 'Mercado cerrado: Después del cierre (09:30-16:00 ET).'
 const MOTIVO_INESTABLE = 'Mercado inestable: la IA espera movimiento en los próximos 15 minutos'
+
+// -- frases de cierre CALCULADAS con la fecha real (réplica de mercado.py, P2.2)
+
+/** Epoch del día calendario de `ahora` en NY con hora de pared `horaNy` (EDT/EST resueltos). */
+function epochNy(ahora: number, horaNy: number, minuto = 0): number {
+  const p = formatearFecha(ahora, ZONA_MERCADO).split(/[/ :]/).map(Number) // [d, m, a, H, M, S]
+  const mediodiaUtc = Date.UTC(p[2], p[1] - 1, p[0], 12)
+  const desfase = minutosDelDia(mediodiaUtc) / 60 >= 8 ? 4 : 5 // EDT | EST
+  return Date.UTC(p[2], p[1] - 1, p[0], horaNy + desfase, minuto)
+}
+
+/** «reabre el lunes 02/11 a las 09:30 ET (08:30 hora de Colombia)». */
+function fraseReapertura(desde: number): string {
+  for (let atras = 1; atras <= 8; atras += 1) {
+    const dia = desde + atras * 86_400_000
+    if (!diaUtil(dia)) continue
+    const apertura = epochNy(dia, 9, 30)
+    const nombre = new Intl.DateTimeFormat('es-CO', {
+      timeZone: ZONA_MERCADO,
+      weekday: 'long',
+    }).format(apertura)
+    const fecha = formatearFecha(apertura, ZONA_MERCADO).slice(0, 5)
+    const col = formatearFecha(apertura).slice(11, 16)
+    return `reabre el ${nombre} ${fecha} a las 09:30 ET (${col} hora de Colombia)`
+  }
+  return ''
+}
+
+/** `mercado.motivo` calculado para cualquier día no sesionado (sin punto). */
+function fraseCierre(ahora: number): string {
+  if (!diaUtil(ahora)) return `Fin de semana · ${fraseReapertura(ahora)}`
+  const minutos = minutosDelDia(ahora)
+  if (minutos < APERTURA_MINUTOS) {
+    const col = formatearFecha(epochNy(ahora, 9, 30)).slice(11, 16)
+    return `Antes de la apertura: hoy a las 09:30 ET (${col} hora de Colombia)`
+  }
+  const col = formatearFecha(epochNy(ahora, 16, 0)).slice(11, 16)
+  return `Después del cierre (16:00 ET, ${col} hora de Colombia) · ${fraseReapertura(ahora)}`
+}
+
+/**
+ * Réplica de `_regla` de `src/endpoints/estado.py` con la antigüedad REAL de
+ * la vela (P2.5): así «hace 26 h» y el motivo del estado cuentan la misma
+ * historia — con la vela vieja el sistema está en AMARILLO, nunca «normal».
+ */
+function estadoDeSistema(
+  ahora: number,
+  ultimaVelaMs: number | null,
+  inestable: boolean,
+): { estado: 'VERDE' | 'AMARILLO'; motivo: string } {
+  const partes: string[] = []
+  if (inestable) partes.push(MOTIVO_INESTABLE)
+  if (ultimaVelaMs !== null && (ahora - ultimaVelaMs) / 1000 > 600) {
+    partes.push(
+      'Revisar el sistema: datos desactualizados (la última vela tiene ' +
+        `${Math.floor((ahora - ultimaVelaMs) / 60_000)} min de antigüedad, máximo 10 min)`,
+    )
+  }
+  if (partes.length === 0) return { estado: 'VERDE', motivo: MOTIVO_VERDE }
+  return { estado: 'AMARILLO', motivo: partes.join('. ') }
+}
 
 const MOTIVO_PENDIENTE =
   'Horizonte de 15 min aún no completo: la predicción está entre las 3 ' +
@@ -213,10 +272,23 @@ function pendiente() {
   }
 }
 
+const MOTIVO_SIN_DATOS =
+  'Sin datos para evaluar: faltan velas de la sesión para medir el horizonte de 15 min.'
+
 function noAplica() {
   return {
     estado: 'NO_APLICA',
     motivo: MOTIVO_NO_APLICA,
+    retorno_pct: null,
+    etiqueta: null,
+    banda_pct: null,
+  }
+}
+
+function sinDatos() {
+  return {
+    estado: 'SIN_DATOS',
+    motivo: MOTIVO_SIN_DATOS,
     retorno_pct: null,
     etiqueta: null,
     banda_pct: null,
@@ -307,7 +379,11 @@ interface Semilla {
 function aPrediccion(
   slotMs: number,
   semilla: Semilla,
-  resultado: ReturnType<typeof disponible> | ReturnType<typeof pendiente> | ReturnType<typeof noAplica>,
+  resultado:
+    | ReturnType<typeof disponible>
+    | ReturnType<typeof pendiente>
+    | ReturnType<typeof noAplica>
+    | ReturnType<typeof sinDatos>,
 ): Prediccion {
   return {
     id: crypto.randomUUID(),
@@ -337,7 +413,12 @@ function construirHistorial(sesiones: number[][], semillas: Semilla[]): Predicci
         ? esUltima
           ? pendiente()
           : noAplica()
-        : disponible(Math.sin((i + indiceSesion * 7) * 0.9) * 0.9)
+        : // P2.1: en sesiones anteriores, algunas filas cayeron en huecos de
+          // ingesta y por eso no se pudieron evaluar («Sin datos para
+          // evaluar», no «No aplica»).
+          !esUltima && i % 6 === 4
+          ? sinDatos()
+          : disponible(Math.sin((i + indiceSesion * 7) * 0.9) * 0.9)
       filas.push(aPrediccion(slot, semillas[(i + indiceSesion) % semillas.length], resultado))
     })
   })
@@ -458,13 +539,14 @@ interface DatosEscenario {
 // -- textos de razonamiento (misma estructura que el real de M1) -------------
 
 const RAZONAMIENTO_REAL =
-  'Atribución de la decisión (gradiente × entrada) sobre una ventana de 12 velas. ' +
-  'Reparto del peso total por grupo: «volumen» 47,8 %, «rango y volatilidad» 28,3 %, ' +
-  '«presión direccional» 20,8 %, «retorno» 3,1 %. El grupo de mayor peso fue «volumen» ' +
-  '(47,8 %) y el menor «retorno» (3,1 %). Dentro de «volumen», lo que más pesó fue el ' +
-  'volumen negociado (40,6 % del total). Las ventanas con más peso fueron la 1, 11, 12 ' +
-  'de 12, es decir las más recientes de la ventana observada. Probabilidades de clase: ' +
-  'DOWN 25,9 % / STABLE 46,2 % / UP 27,9 %. Decisión: UP con 27,9 % de confianza. ' +
+  'Decisión: UP con 27,9 % de confianza; pesó más «volumen» (47,8 % del peso ' +
+  'total) y menos «retorno» (3,1 %). Probabilidades de clase: ' +
+  'DOWN 25,9 % / STABLE 46,2 % / UP 27,9 %. ' +
+  'Método: atribución por gradiente × entrada sobre una ventana de 12 velas — ' +
+  'reparto del peso total por grupo: «volumen» 47,8 %, «rango y volatilidad» 28,3 %, ' +
+  '«presión direccional» 20,8 %, «retorno» 3,1 %. Dentro de «volumen», lo que más ' +
+  'pesó fue el volumen negociado (40,6 % del total). Las ventanas con más peso ' +
+  'fueron la 1, 11, 12 de 12, es decir las más recientes de la ventana observada. ' +
   'Nota para auditoría (RF-303): este registro describe qué ponderó el modelo en su ' +
   'decisión; no es una causalidad de mercado ni una previsión justificada del ' +
   'comportamiento futuro del índice.'
@@ -475,14 +557,19 @@ function razonamientoDe(
   reparto: string,
   probabilidad: string,
 ): string {
+  // P2.3: la conclusión en llano va PRIMERO (lo que ve el operador en la
+  // tarjeta); el método y la advertencia de RF-303 van detrás.
   return (
-    'Atribución de la decisión (gradiente × entrada) sobre una ventana de 12 velas. ' +
-    `Reparto del peso total por grupo: ${reparto} El grupo de mayor peso fue «volumen» y ` +
-    'el menor «retorno». Las ventanas con más peso fueron las más recientes de la ' +
-    `ventana observada. Probabilidades de clase: ${probabilidad} Decisión: ${tendencia} ` +
-    `con ${confianza} de confianza. Nota para auditoría (RF-303): este registro describe ` +
-    'qué ponderó el modelo en su decisión; no es una causalidad de mercado ni una ' +
-    'previsión justificada del comportamiento futuro del índice.'
+    `Decisión: ${tendencia} con ${confianza} de confianza; pesó más «volumen» ` +
+    'y menos «retorno». ' +
+    `Probabilidades de clase: ${probabilidad} ` +
+    'Método: atribución por gradiente × entrada sobre una ventana de 12 velas ' +
+    `— reparto del peso total por grupo: ${reparto} Dentro de «volumen», lo que ` +
+    'más pesó fue el volumen negociado (40,6 % del total). Las ventanas con más ' +
+    'peso fueron las más recientes de la ventana observada. ' +
+    'Nota para auditoría (RF-303): este registro describe qué ponderó el modelo ' +
+    'en su decisión; no es una causalidad de mercado ni una previsión ' +
+    'justificada del comportamiento futuro del índice.'
   )
 }
 
@@ -557,8 +644,7 @@ function escenarioSenalOperable(ahora: number): DatosEscenario {
 
   return {
     status: {
-      estado: 'AMARILLO',
-      motivo: MOTIVO_INESTABLE,
+      ...estadoDeSistema(ahora, ultimaVela.timestamp, true),
       mercado: { abierto: true, motivo: MOTIVO_ABIERTO, feriado: false, zona: ZONA_MERCADO, horario: HORARIO },
       ultima_vela: resumen(ultimaVela, ahora),
       retraso_max_s: 600,
@@ -603,8 +689,8 @@ function escenarioHistorialLargo(ahora: number): DatosEscenario {
   return {
     status: {
       estado: 'CERRADO',
-      motivo: MOTIVO_CIERRA,
-      mercado: { abierto: false, motivo: MOTIVO_CIERRADO, feriado: false, zona: ZONA_MERCADO, horario: HORARIO },
+      motivo: `${fraseCierre(ahora)}.`,
+      mercado: { abierto: false, motivo: fraseCierre(ahora), feriado: false, zona: ZONA_MERCADO, horario: HORARIO },
       ultima_vela: resumen(ultimaVela, ahora),
       retraso_max_s: 600,
       ia: { disponible: true, detalle: IA_OK },
@@ -633,8 +719,7 @@ function escenarioSinPredicciones(ahora: number): DatosEscenario {
 
   return {
     status: {
-      estado: 'VERDE',
-      motivo: MOTIVO_VERDE,
+      ...estadoDeSistema(ahora, ultimaVela.timestamp, false),
       mercado: { abierto: true, motivo: MOTIVO_ABIERTO, feriado: false, zona: ZONA_MERCADO, horario: HORARIO },
       ultima_vela: resumen(ultimaVela, ahora),
       retraso_max_s: 600,
@@ -690,8 +775,7 @@ function escenarioExtremos(ahora: number): DatosEscenario {
 
   return {
     status: {
-      estado: 'AMARILLO',
-      motivo: MOTIVO_INESTABLE,
+      ...estadoDeSistema(ahora, ultimaVela.timestamp, true),
       mercado: { abierto: true, motivo: MOTIVO_ABIERTO, feriado: false, zona: ZONA_MERCADO, horario: HORARIO },
       ultima_vela: resumen(ultimaVela, ahora),
       retraso_max_s: 600,
@@ -769,8 +853,7 @@ function escenarioUnaVela(ahora: number): DatosEscenario {
   const senal = senalSinPrediccion(PERFIL)
   return {
     status: {
-      estado: 'VERDE',
-      motivo: MOTIVO_VERDE,
+      ...estadoDeSistema(ahora, vela.timestamp, false),
       mercado: { abierto: true, motivo: MOTIVO_ABIERTO, feriado: false, zona: ZONA_MERCADO, horario: HORARIO },
       ultima_vela: resumen(vela, ahora),
       retraso_max_s: 600,
@@ -800,7 +883,6 @@ function escenarioUnaVela(ahora: number): DatosEscenario {
  */
 function escenarioDatoDesactualizado(ahora: number): DatosEscenario {
   const ultimaMs = Math.floor((ahora - 12 * 60 * 1000) / VELA_MS) * VELA_MS
-  const antiguedadS = Math.max(0, Math.floor((ahora - ultimaMs) / 1000))
   const velas = construirVelas(ultimaMs - 77 * VELA_MS, 78, 714.2)
   const primera = velas[0]
   const ultimaVela = velas[velas.length - 1]
@@ -813,10 +895,7 @@ function escenarioDatoDesactualizado(ahora: number): DatosEscenario {
 
   return {
     status: {
-      estado: 'AMARILLO',
-      motivo:
-        `Revisar el sistema: datos desactualizados (la última vela tiene ` +
-        `${Math.floor(antiguedadS / 60)} min de antigüedad, máximo 10 min)`,
+      ...estadoDeSistema(ahora, ultimaVela.timestamp, false),
       mercado: { abierto: true, motivo: MOTIVO_ABIERTO, feriado: false, zona: ZONA_MERCADO, horario: HORARIO },
       ultima_vela: resumen(ultimaVela, ahora),
       retraso_max_s: 600,

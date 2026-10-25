@@ -644,6 +644,16 @@ class TestRationale:
         assert porcentajes, "el rationale debería citar porcentajes"
         assert all("," in p for p in porcentajes), porcentajes
 
+    def test_empieza_por_la_conclusion_y_el_metodo_va_al_final(self) -> None:
+        # P2.3: lo visible en la tarjeta debe empezar por qué decidió el
+        # modelo, no por el método; el método y la advertencia van detrás.
+        attr = np.random.RandomState(SEED).randn(WINDOW, N_FEATURES)
+        texto = build_rationale(attr, np.array([0.2, 0.3, 0.5]), 2)
+        assert texto.startswith("Decisión: UP")
+        assert "Método: atribución por gradiente × entrada" in texto
+        assert texto.index("Decisión: UP") < texto.index("gradiente × entrada")
+        assert texto.index("gradiente × entrada") < texto.index("Nota para auditoría")
+
     def test_el_rationale_producido_por_run_inference_es_usable(self, modelo: LocalPredictiveModel, ventana: np.ndarray) -> None:
         tendencia, _, rationale = modelo.run_inference(ventana)
         assert tendencia in rationale

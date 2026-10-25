@@ -52,7 +52,7 @@ export const esquemaSenal = z.object({
 })
 
 export const esquemaResultadoReal = z.object({
-  estado: z.string(), // DISPONIBLE | PENDIENTE | NO_APLICA (texto mostrable)
+  estado: z.string(), // DISPONIBLE | PENDIENTE | SIN_DATOS | NO_APLICA (texto mostrable)
   motivo: z.string(),
   retorno_pct: z.number().nullable(),
   etiqueta: z.string().nullable(),

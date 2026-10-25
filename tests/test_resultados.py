@@ -1,8 +1,10 @@
-"""Resultado real de una predicción — los tres estados (decisión D6).
+"""Resultado real de una predicción — los cuatro estados (D6 + revisión P2.1).
 
 * `PENDIENTE`: la predicción está entre las 3 últimas velas de la serie.
-* `NO_APLICA`: el horizonte de 15 min se sale de la sesión (o faltan datos
-  para medirlo) y no hay precio con qué comparar.
+* `SIN_DATOS`: el horizonte está dentro de la sesión pero faltan velas para
+  medirlo (hueco de ingesta o rango parcial) — «No aplica» engañaba aquí.
+* `NO_APLICA`: el horizonte de 15 min se sale de la sesión (cierre de
+  mercado) y no hay precio con qué comparar.
 * `DISPONIBLE`: hay retorno y etiqueta, con la misma banda del modelo.
 """
 
@@ -20,6 +22,7 @@ from src.utils.resultados import (
     ESTADO_DISPONIBLE,
     ESTADO_NO_APLICA,
     ESTADO_PENDIENTE,
+    ESTADO_SIN_DATOS,
     resultado_real,
 )
 
@@ -134,7 +137,7 @@ class TestDisponible:
         assert resultado.etiqueta == "DOWN"
 
 
-class TestNoAplica:
+class TestNoAplicaYSinDatos:
     def test_el_horizonte_que_cruza_el_cierre_no_aplica(self) -> None:
         # Predicción a las 15:55 del viernes, con la serie ya avanzada al
         # lunes: la predicción NO está entre las tres últimas velas, pero sus
@@ -162,7 +165,8 @@ class TestNoAplica:
             banda_pct=BANDA,
             ultima_vela_ms=serie[-1].timestamp,
         )
-        assert resultado.estado == ESTADO_NO_APLICA
+        # P2.1: dentro de sesión con la vela ausente → «sin datos», no «no aplica».
+        assert resultado.estado == ESTADO_SIN_DATOS
         assert "no aparece en el rango" in resultado.motivo
 
     def test_si_la_sesion_completa_no_esta_en_el_rango_no_aplica(self) -> None:
@@ -175,7 +179,7 @@ class TestNoAplica:
             banda_pct=BANDA,
             ultima_vela_ms=serie[-1].timestamp,
         )
-        assert resultado.estado == ESTADO_NO_APLICA
+        assert resultado.estado == ESTADO_SIN_DATOS
         assert "la sesión de la predicción" in resultado.motivo
 
     def test_sin_velas_previas_no_se_puede_medir_el_retorno(self) -> None:
@@ -189,5 +193,5 @@ class TestNoAplica:
             banda_pct=BANDA,
             ultima_vela_ms=serie[-1].timestamp,
         )
-        assert resultado.estado == ESTADO_NO_APLICA
+        assert resultado.estado == ESTADO_SIN_DATOS
         assert "anteriores" in resultado.motivo

@@ -189,7 +189,9 @@ def _regla(
 ) -> tuple[str, str]:
     """La regla pura, separada del I/O para poder probarla sin endpoint."""
     if not abierto:
-        return "CERRADO", f"Mercado cerrado: {motivo_mercado}."
+        # P2.2: el chip ya dice «Mercado cerrado» — el motivo aporta el qué
+        # y cuándo se reabre (frase CALCULADA en `mercado.motivo`).
+        return "CERRADO", f"{motivo_mercado}."
 
     causas: list[str] = []  # problemas del sistema → «Revisar el sistema» (P1.7)
     inestable = False       # tendencia ≠ STABLE → «Mercado inestable» (P1.7)

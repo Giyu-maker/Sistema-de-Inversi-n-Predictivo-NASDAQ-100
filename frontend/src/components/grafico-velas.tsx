@@ -19,11 +19,12 @@
  * Las fechas vienen de la API ya formateadas en hora de Colombia, así que el
  * eje X usa la hora de la vela sin conversiones de zona horaria.
  */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Bar,
-  BarChart,
   CartesianGrid,
+  ComposedChart,
+  Line,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -194,6 +195,19 @@ export default function GraficoVelas({ velas, cargando, mensaje }: PropsGraficoV
   }, [mostradas, vista])
 
   const resumen = useMemo(() => resumirVelas(mostradas), [mostradas])
+
+  // P2.4: por debajo de ~480 px, 78 velas se vuelven una franja negra sin
+  // distinción hueco/relleno; ahí se dibuja la LÍNEA de cierres. El resumen
+  // textual de arriba (cierre, variación y rango) no cambia.
+  const [estrecho, setEstrecho] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 480px)').matches,
+  )
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 480px)')
+    const alCambiar = () => setEstrecho(mq.matches)
+    mq.addEventListener('change', alCambiar)
+    return () => mq.removeEventListener('change', alCambiar)
+  }, [])
   const hayMasDeUnDia = velas !== null && ultimaSesion(velas.velas).length < velas.velas.length
 
   // Margen vertical: las mechas pegadas al borde son ilegibles. Con una sola
@@ -264,7 +278,7 @@ export default function GraficoVelas({ velas, cargando, mensaje }: PropsGraficoV
 
           <div className="mt-2 h-[280px] text-border" aria-hidden="true">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart
+              <ComposedChart
                 data={datos}
                 margin={{ top: 8, right: 8, bottom: 0, left: 0 }}
                 accessibilityLayer
@@ -290,16 +304,27 @@ export default function GraficoVelas({ velas, cargando, mensaje }: PropsGraficoV
                   cursor={{ stroke: 'currentColor', strokeDasharray: '3 3' }}
                   content={<ContenidoTooltip />}
                 />
-                <Bar
-                  dataKey="rango"
-                  shape={<FormaVela />}
-                  isAnimationActive={false}
-                  // Con pocas velas en pantalla Recharts ensancha el slot hasta
-                  // el ancho del eje: el cuerpo se acota para que una vela
-                  // aislada no se dibuje como un rectángulo gigante.
-                  maxBarSize={16}
-                />
-              </BarChart>
+                {estrecho ? (
+                  <Line
+                    dataKey="cierre"
+                    type="monotone"
+                    stroke="currentColor"
+                    strokeWidth={1.5}
+                    dot={false}
+                    isAnimationActive={false}
+                  />
+                ) : (
+                  <Bar
+                    dataKey="rango"
+                    shape={<FormaVela />}
+                    isAnimationActive={false}
+                    // Con pocas velas en pantalla Recharts ensancha el slot hasta
+                    // el ancho del eje: el cuerpo se acota para que una vela
+                    // aislada no se dibuje como un rectángulo gigante.
+                    maxBarSize={16}
+                  />
+                )}
+              </ComposedChart>
             </ResponsiveContainer>
           </div>
 

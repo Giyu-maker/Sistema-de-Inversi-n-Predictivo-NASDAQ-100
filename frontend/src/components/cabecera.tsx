@@ -179,7 +179,10 @@ export function Cabecera({ estado, fase, mensaje }: PropsCabecera) {
                   ? 'Hoy no hay sesión regular del mercado: fin de semana'
                   : estado?.mercado.feriado === true
                     ? 'Hoy no hay sesión regular del mercado: feriado'
-                    : estado?.mercado.abierto === true
+                    // `posicion.dentro` (calendario real) además del estado:
+                    // con fixtures o con el chip retrasado, «faltan X» solo
+                    // se muestra si de verdad la sesión corre hoy (P2.5).
+                    : estado?.mercado.abierto === true && posicion.dentro
                       ? `Sesión en curso: faltan ${Math.floor(restantes / 60)} horas y ${restantes % 60} minutos para el cierre`
                       // Sin esto, de 16:00 a medianoche un lector de pantalla
                       // oía «la sesión aún no comienza» con la sesión ya
@@ -202,7 +205,7 @@ export function Cabecera({ estado, fase, mensaje }: PropsCabecera) {
             </div>
             <span className="dato">16:00</span>
             <span>ET</span>
-            {haySesionHoy && estado?.mercado.abierto === true ? (
+            {haySesionHoy && estado?.mercado.abierto === true && posicion.dentro ? (
               <span>
                 · faltan{' '}
                 {restantes >= 60

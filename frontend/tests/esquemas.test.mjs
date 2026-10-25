@@ -222,16 +222,27 @@ test('senal-operable: señal operable de verdad y estado AMARILLO (UP ≠ STABLE
   assert.ok(status.senal.motivo.startsWith('Señal operable: tendencia al alza'))
 })
 
-test('sin-predicciones: verde, sin señal y con el copy literal del backend', () => {
-  const status = servirEscenario('sin-predicciones', '/api/status', Date.now())
-  assert.equal(status.estado, 'VERDE')
+test('sin-predicciones: sin señal, copy literal y estado coherente con la antigüedad', () => {
+  const ahora = Date.now()
+  const status = servirEscenario('sin-predicciones', '/api/status', ahora)
+  // P2.5: el estado cuenta la misma historia que «hace X» de la última vela
+  // — fresca → VERDE; envejecida (p. ej. fin de semana) → AMARILLO con
+  // «datos desactualizados», igual que `_regla` de estado.py.
+  const vela = status.ultima_vela
+  const fresca = vela !== null && (ahora - vela.timestamp) / 1000 <= 600
+  assert.equal(status.estado, fresca ? 'VERDE' : 'AMARILLO')
+  if (fresca) {
+    assert.equal(status.motivo, 'Dato actualizado, IA disponible y última predicción sin movimiento.')
+  } else {
+    assert.match(status.motivo, /datos desactualizados/)
+  }
   assert.equal(status.ultima_prediccion, null)
   assert.equal(status.senal.operable, false)
   assert.equal(
     status.senal.motivo,
     'Sin predicción registrada: no hay señal que evaluar. Umbral del perfil Moderado: 75 %.',
   )
-  const ultima = servirEscenario('sin-predicciones', '/api/predictions/latest', Date.now())
+  const ultima = servirEscenario('sin-predicciones', '/api/predictions/latest', ahora)
   assert.equal(ultima.encontrada, false)
   assert.equal(ultima.prediccion, null)
 })
