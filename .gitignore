@@ -1,6 +1,7 @@
 # Secretos: .env NUNCA se commitea (lleva credenciales; ver .env.example)
 .env
 .env.local
+.env.sesion
 
 # Entorno Python
 .venv/

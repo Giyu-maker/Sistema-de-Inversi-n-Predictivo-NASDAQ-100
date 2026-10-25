@@ -86,6 +86,10 @@ services:
       # explica): nunca junto a los secretos que ella descifra.
       - path: .env.local
         required: false
+      # scripts/sesion.sh vol aquí INFERENCE_URL apuntando a la IP del puente
+      # (los archivos posteriores mandan sobre los anteriores).
+      - path: .env.sesion
+        required: false
     depends_on:
       postgres:
         condition: service_healthy
@@ -115,6 +119,9 @@ services:
       - path: .env
         required: true
       - path: .env.local
+        required: false
+      # INFERENCE_URL de puente, escrito por scripts/sesion.sh (ver api).
+      - path: .env.sesion
         required: false
     depends_on:
       postgres:
