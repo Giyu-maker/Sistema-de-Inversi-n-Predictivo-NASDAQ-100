@@ -83,6 +83,11 @@ export function useCiclo(llave: number | null | undefined): UsoCiclo {
         rendimiento.estado === 'ok' &&
         calidad.estado === 'ok'
       ) {
+        // RNF-003 (componente «actualizar la interfaz»): ancla el instante
+        // en que los cuatro responses quedaron validados; el `measure` del
+        // efecto de abajo cierra cuando el navegador ya lo pintó.
+        performance.clearMarks('ciclo:datos')
+        performance.mark('ciclo:datos')
         setDatos({
           velas: velas.datos,
           ultima: ultima.datos,
@@ -103,6 +108,26 @@ export function useCiclo(llave: number | null | undefined): UsoCiclo {
       peticion.abort()
     }
   }, [llave, impulso])
+
+  // RNF-003 (c): render del cliente tras recibir datos. Doble `requestAnimationFrame`
+  // para medir DESPUÉS del primer pintado; el `measure` queda en el buffer
+  // circular del navegador (el colector de `scripts/bench_rnf003_ui.mjs` lo
+  // lee), coste nulo cuando no hay marca pendiente.
+  useEffect(() => {
+    if (datos === null) {
+      return
+    }
+    let segundo = 0
+    const primero = requestAnimationFrame(() => {
+      segundo = requestAnimationFrame(() => {
+        performance.measure('render-ciclo-tras-datos', { start: 'ciclo:datos' })
+      })
+    })
+    return () => {
+      cancelAnimationFrame(primero)
+      cancelAnimationFrame(segundo)
+    }
+  }, [datos])
 
   return { datos, fase, mensaje, refrescar }
 }

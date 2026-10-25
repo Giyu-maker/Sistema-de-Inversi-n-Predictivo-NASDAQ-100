@@ -66,6 +66,10 @@ export function useEstado(): UsoEstado {
       }
       if (respuesta.estado === 'ok') {
         fallos = 0
+        // RNF-003 (c): ancla «datos validados»; el efecto de abajo cierra el
+        // `measure` cuando el navegador los pinta (cada latido de 10 s).
+        performance.clearMarks('estado:datos')
+        performance.mark('estado:datos')
         setEstado(respuesta.datos)
         setFase('ok')
         setMensaje(null)
@@ -98,6 +102,25 @@ export function useEstado(): UsoEstado {
       document.removeEventListener('visibilitychange', alCambiarVisibilidad)
     }
   }, [impulso])
+
+  // RNF-003 (c): render del cliente tras recibir datos — el latido repite
+  // cada 10 s, así que este `measure` alimenta la tabla con muestras
+  // regulares (ver `scripts/bench_rnf003_ui.mjs`).
+  useEffect(() => {
+    if (estado === null) {
+      return
+    }
+    let segundo = 0
+    const primero = requestAnimationFrame(() => {
+      segundo = requestAnimationFrame(() => {
+        performance.measure('render-estado-tras-datos', { start: 'estado:datos' })
+      })
+    })
+    return () => {
+      cancelAnimationFrame(primero)
+      cancelAnimationFrame(segundo)
+    }
+  }, [estado])
 
   return { estado, fase, mensaje, refrescar }
 }
