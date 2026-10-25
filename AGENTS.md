@@ -236,3 +236,10 @@ Restaurar solo desde el lockfile: `npx skills experimental_install`. Actualizar:
    - **NO ejecutar** `use_figma`, `create_new_file`, `generate_figma_design`, `send_code_to_figma`, `html_to_figma`, `upload_assets`, `export_video`, `generate_image`, ni ninguna herramienta que **escriba** en Figma, salvo petición explícita de la Gerente o el líder **en el mismo mensaje**.
    - Antes de invocar **cualquier** herramienta de Figma, informar en el chat cuántas llamadas se harían y para qué, y esperar visto bueno.
    - No usar herramientas `weave_*` ni de shaders/plugins generativos: quedan fuera del alcance de la Fase B.
+
+## 18. Reglas de operación del agente
+
+1. **Nunca en primer plano procesos que no terminan** (`npm run dev`, servidores, watchers, `docker compose logs -f`, Chromium con depuración remota): bloquean la sesión y mueren al reiniciar el entorno.
+2. **Siempre en segundo plano, con log y PID:** `nohup <comando> > /tmp/<nombre>.log 2>&1 & echo $!` (o el parámetro `background` del shell cuando exista).
+3. **Esperar a que respondan** antes de usarlos: `curl` al puerto o al `/health` con reintentos y timeout corto.
+4. **Matarlos al terminar** (`kill <PID>` o el gesto equivalente) y comprobar que el puerto quedó libre: el entorno debe quedar como estaba.
