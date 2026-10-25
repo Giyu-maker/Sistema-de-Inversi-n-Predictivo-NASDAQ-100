@@ -28,7 +28,7 @@ import os
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any
-from zoneinfo import ZoneInfo
+from src.utils.fechas import ZONA_MERCADO
 
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
@@ -38,7 +38,7 @@ from src.ingestion.providers import MarketDataProvider, TwelveDataProvider
 
 logger = logging.getLogger(__name__)
 
-_MARKET_TZ = ZoneInfo("America/New_York")  # los proveedores entregan timestamps en hora de Nueva York
+_MARKET_TZ = ZONA_MERCADO  # la zona de la sesión vive en src/utils/fechas (única fuente)
 _CANDLE_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 # SRS §4.4 / RF-103: "no se permiten escrituras destructivas o modificaciones de

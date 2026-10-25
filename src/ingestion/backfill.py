@@ -31,17 +31,15 @@ import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 from influxdb_client import InfluxDBClient
 
 from src.ingestion.engine import IngestionEngine, NasdaqCandle, parse_raw_candle
 from src.ingestion.providers.twelve_data import TwelveDataProvider
+from src.utils.mercado import etiqueta_ny
 
 logger = logging.getLogger(__name__)
 
-_NY = ZoneInfo("America/New_York")
-_API_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 _MAX_OUTPUTSIZE = 5000          # límite documentado por Twelve Data
 _THROTTLE_S = 7.6               # 8 créditos/min → margen bajo el límite de 8 req/min
 _SAFETY_MAX_REQUESTS = 200      # nunca más de 200 peticiones (25% de la cuota diaria)
@@ -64,18 +62,13 @@ class BackfillReport:
     def fecha_primera(self) -> str:
         if self.primera_vela is None:
             return "-"
-        return datetime.fromtimestamp(self.primera_vela / 1000, tz=_NY).strftime(_API_DATE_FORMAT)
+        return etiqueta_ny(self.primera_vela)
 
     @property
     def fecha_ultima(self) -> str:
         if self.ultima_vela is None:
             return "-"
-        return datetime.fromtimestamp(self.ultima_vela / 1000, tz=_NY).strftime(_API_DATE_FORMAT)
-
-
-def _ny_string(epoch_ms: int) -> str:
-    """Epoch ms → ``YYYY-MM-DD HH:MM:SS`` en hora de Nueva York (formato de la API)."""
-    return datetime.fromtimestamp(epoch_ms / 1000, tz=_NY).strftime(_API_DATE_FORMAT)
+        return etiqueta_ny(self.ultima_vela)
 
 
 async def run_backfill(
@@ -96,7 +89,7 @@ async def run_backfill(
     report = BackfillReport()
     wanted: dict[int, NasdaqCandle] = {}
     start_floor = end_ms - (target_trading_days * 4) * 86_400_000  # holgura de calendario
-    window_end = _ny_string(end_ms)
+    window_end = etiqueta_ny(end_ms)
 
     while len({c.timestamp // 86_400_000 for c in wanted.values()}) < target_trading_days:
         if report.peticiones >= _SAFETY_MAX_REQUESTS:
@@ -106,7 +99,7 @@ async def run_backfill(
             break
 
         payload = await provider.fetch_candles_range(
-            start_date=_ny_string(start_floor), end_date=window_end,
+            start_date=etiqueta_ny(start_floor), end_date=window_end,
             outputsize=_MAX_OUTPUTSIZE,
         )
         report.peticiones += 1
@@ -131,7 +124,7 @@ async def run_backfill(
         oldest = min(c.timestamp for c in ventana)
         logger.info(
             "Ventana %s → %s: %d velas (%d nuevas, total %d)",
-            _ny_string(oldest), window_end, len(ventana), nuevos, len(wanted),
+            etiqueta_ny(oldest), window_end, len(ventana), nuevos, len(wanted),
         )
 
         if len(ventana) < _MAX_OUTPUTSIZE:
@@ -141,7 +134,7 @@ async def run_backfill(
             break
         # Siguiente ventana terminando justo ANTES de la vela más antigua (end es
         # inclusivo, así que restamos 1 ms para no repetir el borde).
-        window_end = _ny_string(oldest - 1)
+        window_end = etiqueta_ny(oldest - 1)
         if throttle_s:
             await asyncio.sleep(throttle_s)
 

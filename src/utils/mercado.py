@@ -264,3 +264,28 @@ def feriados_operativos() -> frozenset[date]:
     hoy = datetime.now(ZONA_MERCADO).date()
     base = set(feriados_nyse_minimos(hoy.year)) | set(feriados_nyse_minimos(hoy.year + 1))
     return frozenset(base | set(feriados_desde_entorno()))
+
+
+# -- la fecha de sesión vive SOLO aquí (revisión, punto 3) ---------------------
+#: Formato de las etiquetas de hora que habla Twelve Data (siempre NY).
+_FMT_API = "%Y-%m-%d %H:%M:%S"
+
+
+def apertura_ms(dia: date) -> int:
+    """Epoch ms de la apertura (09:30 ET) de `dia`, con el DST resuelto.
+
+    Es el ORIGEN de los 78 slots de la sesión: la detección de huecos, el
+    número de slots esperados y cualquier cálculo de fecha de sesión pasan
+    por aquí — jamás por un offset fijo ni por la hora de Colombia (que es
+    solo para mostrar). En EDT son las 13:30 UTC; en EST, las 14:30.
+    """
+    return int(datetime.combine(dia, APERTURA, tzinfo=ZONA_MERCADO).timestamp() * 1000)
+
+
+def etiqueta_ny(epoch_ms: int) -> str:
+    """Epoch ms → ``YYYY-MM-DD HH:MM:SS`` en hora de Nueva York.
+
+    La ÚNICA traducción epoch→etiqueta de la sesión (la API de Twelve Data y
+    los informes la usan; la hora de Colombia jamás se coloca aquí).
+    """
+    return datetime.fromtimestamp(epoch_ms / 1000, tz=ZONA_MERCADO).strftime(_FMT_API)

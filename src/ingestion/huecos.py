@@ -38,13 +38,9 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from zoneinfo import ZoneInfo
-
 from src.ingestion.engine import IngestionEngine, parse_raw_candle
-from src.utils.mercado import APERTURA, mercado
+from src.utils.mercado import apertura_ms, ahora_ny, etiqueta_ny, mercado
 
-_NY = ZoneInfo("America/New_York")
-_FORMATO_API = "%Y-%m-%d %H:%M:%S"
 INTERVALO_MS = 5 * 60 * 1000
 #: Horario regular 09:30–16:00 ET en velas de 5 min: 78 slots por sesión.
 SLOTS_SESION = 78
@@ -105,16 +101,6 @@ class InformeHueco:
     detalle: str = ""
 
 
-def _ny(epoch_ms: int) -> str:
-    """Epoch ms → ``YYYY-MM-DD HH:MM:SS`` en hora de Nueva York (formato de la API)."""
-    return datetime.fromtimestamp(epoch_ms / 1000, tz=_NY).strftime(_FORMATO_API)
-
-
-def _apertura_ms(dia: date) -> int:
-    """Epoch ms de la apertura (09:30 ET) del día dado."""
-    return int(datetime.combine(dia, APERTURA, tzinfo=_NY).timestamp() * 1000)
-
-
 def _sesion_valida(dia: date, feriados: frozenset[date]) -> bool:
     return dia.weekday() < 5 and dia not in feriados
 
@@ -137,7 +123,7 @@ def _sesiones_candidatas(
             break
     if (
         _sesion_valida(hoy, feriados)
-        and instante.timestamp() * 1000 >= _apertura_ms(hoy)
+        and instante.timestamp() * 1000 >= apertura_ms(hoy)
     ):
         candidatas.append((hoy, True))
     return candidatas
@@ -145,7 +131,7 @@ def _sesiones_candidatas(
 
 def _slots_esperados(dia: date, en_curso: bool, ahora_ms: int) -> list[int]:
     """Los `SLOTS_SESION` inicios de vela esperados; en curso, solo los ya transcurridos."""
-    base = _apertura_ms(dia)
+    base = apertura_ms(dia)
     slots = [base + k * INTERVALO_MS for k in range(SLOTS_SESION)]
     if en_curso:
         # Solo velas cuya ventana de 5 min YA cerró: la vela en formación la
@@ -167,7 +153,7 @@ async def recuperar_hueco(
     siempre dentro de la cuota). Si algo falla se devuelve un informe con el
     motivo y el ciclo normal del tick sigue.
     """
-    instante = ahora or datetime.now(_NY)
+    instante = ahora or ahora_ny()
     candidatas = _sesiones_candidatas(instante, feriados)
     if not candidatas:
         return InformeHueco(
@@ -211,7 +197,7 @@ async def recuperar_hueco(
         # formación, que la guarda insert-if-absent no duplica).
         fin_tramo = ahora_ms if en_curso else faltantes[-1] + INTERVALO_MS
         payload = await engine.provider.fetch_candles_range(
-            start_date=_ny(faltantes[0]), end_date=_ny(fin_tramo)
+            start_date=etiqueta_ny(faltantes[0]), end_date=etiqueta_ny(fin_tramo)
         )
         cuota.consumir()
         pedidas += 1
@@ -243,7 +229,7 @@ async def recuperar_hueco(
         escritas += e
         omitidas += o
         recuperaciones.append(
-            f"{dia.strftime('%d/%m/%Y')}: {_ny(faltantes[0])} → {_ny(fin_tramo)} "
+            f"{dia.strftime('%d/%m/%Y')}: {etiqueta_ny(faltantes[0])} → {etiqueta_ny(fin_tramo)} "
             f"({len(faltantes)} huecos, {len(velas)} velas)"
         )
 

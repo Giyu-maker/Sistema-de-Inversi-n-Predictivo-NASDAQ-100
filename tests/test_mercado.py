@@ -13,6 +13,7 @@ import pytest
 
 from src.utils.fechas import ZONA_MERCADO
 from src.utils.mercado import (
+    apertura_ms,
     feriados_desde_entorno,
     feriados_nyse_minimos,
     mercado,
@@ -142,6 +143,19 @@ class TestFeriadosNyseMinimos:
     def test_lee_la_variable_de_entorno_cuando_no_le_llega_nada(self, monkeypatch) -> None:
         monkeypatch.setenv("FERIADOS_NYSE", "2026-12-25, 2027-01-01")
         assert feriados_desde_entorno() == frozenset({date(2026, 12, 25), date(2027, 1, 1)})
+
+
+def test_apertura_ms_resuelve_el_dst_siempre_en_nueva_york() -> None:
+    """Punto 3: la fecha de sesión se calcula en UN sitio y en America/New_York."""
+    # Verano (EDT, UTC−4): 09:30 ET = 13:30 UTC.
+    assert apertura_ms(date(2026, 10, 20)) == int(
+        datetime(2026, 10, 20, 13, 30, tzinfo=timezone.utc).timestamp() * 1000
+    )
+    # Invierno (EST, UTC−5): 09:30 ET = 14:30 UTC — la misma pared, otra hora.
+    assert apertura_ms(date(2026, 11, 3)) == int(
+        datetime(2026, 11, 3, 14, 30, tzinfo=timezone.utc).timestamp() * 1000
+    )
+    # La hora de Colombia es SOLO para mostrar y jamás entra en este cálculo.
 
 
 class TestGuardas:

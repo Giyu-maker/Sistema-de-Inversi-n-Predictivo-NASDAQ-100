@@ -10,14 +10,21 @@ cableado en el scheduler.
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from zoneinfo import ZoneInfo
 
 from src.ingestion.engine import IngestionEngine
-from src.ingestion.huecos import CuotaBasica, InformeHueco, recuperar_hueco
+from src.ingestion.huecos import (
+    CuotaBasica,
+    InformeHueco,
+    _sesiones_candidatas,
+    _slots_esperados,
+    recuperar_hueco,
+)
 from src.ingestion.scheduler import IngestionScheduler
+from src.utils.mercado import apertura_ms
 
 _NY = ZoneInfo("America/New_York")
 _RAW = {"open": 100.0, "high": 101.5, "low": 99.5, "close": 101.0, "volume": 900.0}
@@ -364,3 +371,80 @@ class TestCableadoEnElScheduler:
 
         engine.fetch_nasdaq_quote.assert_awaited_once()
         engine.write_to_influx.assert_awaited_once()
+
+
+class TestInviernoYCruce:
+    """Punto 3 (revisión): invierno EST (post-01/11/2026) y el cruce
+    vie 30/10 → lun 02/11 en la detección de huecos y el número de slots.
+    La fecha de sesión sale SIEMPRE de `src/utils/mercado.py` (NY)."""
+
+    def test_sesion_de_invierno_tiene_78_slots_a_las_09_30_est(self) -> None:
+        dia = date(2026, 11, 3)  # martes posterior al cambio de hora
+        slots = _slots_esperados(dia, en_curso=False, ahora_ms=0)
+
+        assert len(slots) == 78
+        # EST (UTC−5): 09:30 ET = 14:30 UTC; en verano habría sido 13:30.
+        assert slots[0] == int(
+            datetime(2026, 11, 3, 14, 30, tzinfo=timezone.utc).timestamp() * 1000
+        )
+        assert slots[0] == apertura_ms(dia)
+        assert slots[-1] - slots[0] == 77 * 5 * 60 * 1000
+
+    def test_hueco_interno_en_invierno_pide_hora_est_verdadera(self) -> None:
+        dia = date(2026, 11, 3)
+        slots = _slots_esperados(dia, en_curso=False, ahora_ms=0)
+        faltante = slots[40]  # 12:50 ET
+        existentes = (
+            (set(slots) - {faltante})
+            | set(_slots(date(2026, 10, 30)))
+            | set(_slots(date(2026, 11, 2)))  # la lunes, última cerrada, completa
+        )
+        payload = {"candles": {"2026-11-03 12:50:00": _RAW}}
+        engine, proveedor = _engine_con(existentes, payload)
+
+        informe = asyncio.run(
+            recuperar_hueco(engine, CuotaBasica(), ahora=_ny(2026, 11, 3, 13, 0))
+        )
+
+        assert informe.motivo == "recuperado"
+        # El tramo se pide en hora VERDADERA de NY (así la entiende la API).
+        assert proveedor.llamadas == [("2026-11-03 12:50:00", "2026-11-03 13:00:00")]
+
+    def test_cruce_del_cambio_de_hora_entre_viernes_y_lunes(self) -> None:
+        viernes = date(2026, 10, 30)  # EDT
+        lunes = date(2026, 11, 2)     # EST, tras girar el reloj el domingo
+        slots_vie = _slots_esperados(viernes, en_curso=False, ahora_ms=0)
+        assert len(slots_vie) == 78
+        assert slots_vie[0] == int(
+            datetime(2026, 10, 30, 13, 30, tzinfo=timezone.utc).timestamp() * 1000
+        )
+        # El domingo (gira el reloj): única candidata, la del viernes.
+        assert _sesiones_candidatas(_ny(2026, 11, 1, 12, 0), frozenset()) == [
+            (viernes, False)
+        ]
+        # El lunes por la mañana: la cerrada (viernes) + la de hoy en curso.
+        assert _sesiones_candidatas(_ny(2026, 11, 2, 10, 0), frozenset()) == [
+            (viernes, False),
+            (lunes, True),
+        ]
+        # La sesión en curso lleva solo los slots ya transcurridos (12 a las 10:30).
+        slots_lunes = _slots_esperados(
+            lunes, en_curso=True, ahora_ms=int(_ny(2026, 11, 2, 10, 30).timestamp() * 1000)
+        )
+        assert len(slots_lunes) == 12  # 09:30 … 10:25
+
+    def test_recuperacion_del_lunes_tras_el_cruce(self) -> None:
+        # Viernes completo + lunes con las primeras velas ausentes: el tramo
+        # arranca en la apertura EST de hoy (9:30 = 14:30 UTC).
+        existentes = set(_slots(date(2026, 10, 30)))
+        payload = {
+            "candles": {"2026-11-02 09:30:00": _RAW, "2026-11-02 09:35:00": _RAW}
+        }
+        engine, proveedor = _engine_con(existentes, payload)
+
+        informe = asyncio.run(
+            recuperar_hueco(engine, CuotaBasica(), ahora=_ny(2026, 11, 2, 10, 0))
+        )
+
+        assert informe.motivo == "recuperado"
+        assert proveedor.llamadas == [("2026-11-02 09:30:00", "2026-11-02 10:00:00")]
