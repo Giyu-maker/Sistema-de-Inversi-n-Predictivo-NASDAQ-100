@@ -253,7 +253,7 @@ def _a_calidad(cuerpo: dict[str, Any]) -> CalidadModeloSalida:
         feature_schema_version=str(cuerpo["feature_schema_version"]),
         entrenado_en_ms=int(cuerpo["entrenado_en_ms"]),
         entrenado_en=fecha_hora(int(cuerpo["entrenado_en_ms"])),
-        dispositivo_entrenamiento=str(cuerpo.get("dispositivo_entrenamiento", "")),
+        dispositivo_entrenamiento=str(cuerpo.get("dispositivo_entrenamiento", "")).upper(),
         macro_f1_test=float(macro) if macro is not None else None,
         banda_stable_pct=float(cuerpo["banda_stable_pct"]),
         acierto_direccional=_acierto(cuerpo.get("acierto_direccional") or {}),

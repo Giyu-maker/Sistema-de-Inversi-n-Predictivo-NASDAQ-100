@@ -143,6 +143,39 @@ export function formatearRatio(ratio: number, decimales = 1): string {
 }
 
 /**
+ * Confianza [0..1] sin fingir certeza (revisión de capturas P1.10): si el
+ * redondeo a un decimal llegaría a 100, se escribe «más de 99,9 %» — un
+ * modelo probabilístico nunca está al 100 %.
+ */
+export function formatearConfianza(ratio: number): string {
+  if (Math.round(ratio * 1000) / 10 >= 100) return `más de 99,9${ESPACIO_FINO}%`
+  return formatearRatio(ratio)
+}
+
+/**
+ * «15:55 ET» — hora de Nueva York para el rótulo doble de la última vela
+ * (P1.4): la interfaz muestra hora de Colombia y la sesión se vive en ET.
+ */
+export function formatearHoraET(epochMs: number): string {
+  const p = partesDeFecha(epochMs, ZONA_MERCADO)
+  return `${p.hour}:${p.minute} ET`
+}
+
+/**
+ * ¿La predicción pertenece a un día de sesión distinto al de la última vela?
+ * (P1.5). La comparación es por FECHA en America/New_York de cada instante —
+ * sin reloj de por medio, así el render es puro—; como las predicciones se
+ * derivan de las velas, «distinto día» siempre es «anterior». Referencia
+ * `null` (aún no hay velas): no hay nada que calificar.
+ */
+export function sesionPrevia(epochPrediccion: number, epochReferencia: number | null): boolean {
+  if (epochReferencia === null) return false
+  const diaPrediccion = formatearFecha(epochPrediccion, ZONA_MERCADO).slice(0, 10)
+  const diaReferencia = formatearFecha(epochReferencia, ZONA_MERCADO).slice(0, 10)
+  return diaPrediccion !== diaReferencia
+}
+
+/**
  * Porcentaje SIEMPRE con signo explícito, para rendimientos y variaciones:
  * «+0,03 %» / «−1,25 %». El signo es texto (neutro: ni verde ni rojo, el rojo
  * lo reserva el Kill-Switch); el cero se firma solo como «0,00 %». El signo

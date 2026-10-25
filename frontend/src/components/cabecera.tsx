@@ -24,12 +24,13 @@ import {
   Info,
   Moon,
   Sun,
+  TrendUp,
   Warning,
 } from '@phosphor-icons/react'
 
 import type { Fase } from '../api/cliente.ts'
 import type { EstadoSistema } from '../api/esquemas.ts'
-import { posicionSesion } from '../lib/formato.ts'
+import { formatearHoraET, posicionSesion } from '../lib/formato.ts'
 import { alternarTema, temaActual } from '../lib/tema.ts'
 import type { Tema } from '../lib/tema.ts'
 
@@ -64,9 +65,17 @@ function antiguedadEnPalabras(segundos: number): string {
   return `hace ${Math.floor(segundos / 3600)} h`
 }
 
-function iconoDeEstado(codigo: string, clase: string): React.ReactElement {
+function iconoDeEstado(codigo: string, clase: string, motivo?: string): React.ReactElement {
   if (codigo === 'VERDE') return <CheckCircle weight="bold" className={clase} />
-  if (codigo === 'AMARILLO') return <Warning weight="bold" className={clase} />
+  if (codigo === 'AMARILLO') {
+    // P1.7: los dos ámbares se distinguen por texto E ícono — «Mercado
+    // inestable» (movimiento esperado) frente a «Revisar el sistema».
+    return motivo?.startsWith('Mercado inestable') ? (
+      <TrendUp weight="bold" className={clase} />
+    ) : (
+      <Warning weight="bold" className={clase} />
+    )
+  }
   return <Clock weight="bold" className={clase} />
 }
 
@@ -117,7 +126,7 @@ export function Cabecera({ estado, fase, mensaje }: PropsCabecera) {
                 <span
                   className={`inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 text-sm font-medium ${etiqueta.clase}`}
                 >
-                  {iconoDeEstado(estado.estado, 'h-4 w-4')}
+                  {iconoDeEstado(estado.estado, 'h-4 w-4', estado.motivo)}
                   {etiqueta.texto}
                 </span>
                 <p className="min-w-0 text-sm text-foreground">{estado.motivo}</p>
@@ -132,7 +141,9 @@ export function Cabecera({ estado, fase, mensaje }: PropsCabecera) {
               ) : (
                 <>
                   Última vela:{' '}
-                  <span className="dato text-foreground">{estado.ultima_vela.fecha}</span>
+                  <span className="dato text-foreground">
+                    {estado.ultima_vela.fecha} ({formatearHoraET(estado.ultima_vela.timestamp)})
+                  </span>
                   {estado.ultima_vela.antiguedad_s === null
                     ? null
                     : ` · ${antiguedadEnPalabras(estado.ultima_vela.antiguedad_s)}`}
@@ -199,6 +210,7 @@ export function Cabecera({ estado, fase, mensaje }: PropsCabecera) {
                   : `${restantes} min`}
               </span>
             ) : null}
+            <span className="text-muted-foreground/70">Sesión regular</span>
           </div>
 
           {/* Avisos: conviene saberlos, no deciden el estado (fuera del vivo).

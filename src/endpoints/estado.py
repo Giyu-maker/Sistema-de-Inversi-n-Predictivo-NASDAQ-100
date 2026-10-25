@@ -47,7 +47,7 @@ from src.endpoints.esquemas import (
     PerfilSalida,
 )
 from src.ingestion.engine import NasdaqCandle
-from src.security.perfiles import EN_LLANO, senal_sin_prediccion
+from src.security.perfiles import senal_sin_prediccion
 from src.utils.mercado import mercado
 
 router = APIRouter()
@@ -191,29 +191,36 @@ def _regla(
     if not abierto:
         return "CERRADO", f"Mercado cerrado: {motivo_mercado}."
 
-    causas: list[str] = []
+    causas: list[str] = []  # problemas del sistema → «Revisar el sistema» (P1.7)
+    inestable = False       # tendencia ≠ STABLE → «Mercado inestable» (P1.7)
     if vela_error:
         causas.append(vela_error)
     elif ultima_vela_ms is None:
-        causas.append("Sin velas registradas: no hay datos en horario de mercado.")
+        causas.append("sin velas registradas en horario de mercado")
     else:
         antiguedad_s = max(0, (ahora_ms - ultima_vela_ms) // 1000)
         if antiguedad_s > retraso_max_s:
             causas.append(
-                f"Sin datos en horario de mercado: la última vela tiene "
-                f"{antiguedad_s // 60} min de antigüedad (máximo "
-                f"{retraso_max_s // 60} min)."
+                f"datos desactualizados (la última vela tiene "
+                f"{antiguedad_s // 60} min de antigüedad, máximo "
+                f"{retraso_max_s // 60} min)"
             )
     if not ia.disponible:
         causas.append(ia.detalle)
     if ultima_prediccion is not None and ultima_prediccion.trend_prediction != "STABLE":
-        causas.append(
-            "La última predicción no es estable: es tendencia "
-            f"{EN_LLANO[ultima_prediccion.trend_prediction]}."
-        )
+        # P1.7: la tendencia NO se pinta aquí (los colores y textos de estado
+        # no comunican dirección de mercado, solo si hay movimiento esperado).
+        inestable = True
     if error_pg:
         causas.append(error_pg)
 
+    partes: list[str] = []
+    if inestable:
+        partes.append(
+            "Mercado inestable: la IA espera movimiento en los próximos 15 minutos"
+        )
     if causas:
-        return "AMARILLO", " ".join(causas)
+        partes.append("Revisar el sistema: " + " / ".join(causas))
+    if partes:
+        return "AMARILLO", ". ".join(partes)
     return "VERDE", "Dato actualizado, IA disponible y última predicción sin movimiento."

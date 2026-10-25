@@ -27,12 +27,14 @@ import {
 
 import type { Prediccion } from '../api/esquemas.ts'
 import type { UsoHistorial } from '../hooks/useHistorial.ts'
-import { formatearPorcentajeFirmado, formatearRatio } from '../lib/formato.ts'
+import { formatearConfianza, formatearPorcentajeFirmado } from '../lib/formato.ts'
 
 /** Palabras llanas para la tendencia predicha (el enum lo manda el backend). */
 const TENDENCIAS: Record<string, { texto: string; clase: string }> = {
-  UP: { texto: 'Al alza', clase: 'text-verde-texto' },
-  DOWN: { texto: 'A la baja', clase: 'text-ambar-texto' },
+  // P1.2: la dirección NO lleva colores de estado (verde/ámbar/rojo es el
+  // estado del sistema; el rojo, el Kill-Switch): flecha y texto, color normal.
+  UP: { texto: 'Al alza', clase: 'text-foreground' },
+  DOWN: { texto: 'A la baja', clase: 'text-foreground' },
   STABLE: { texto: 'Sin movimiento', clase: 'text-foreground' },
 }
 
@@ -159,7 +161,7 @@ export function Historial({ historial }: PropsHistorial) {
                     <span className="text-muted-foreground">
                       Confianza{' '}
                       <span className="dato text-foreground">
-                        {formatearRatio(prediccion.confidence_score)}
+                        {formatearConfianza(prediccion.confidence_score)}
                       </span>
                     </span>
                   </div>

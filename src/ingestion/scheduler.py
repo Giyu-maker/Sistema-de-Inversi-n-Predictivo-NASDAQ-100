@@ -43,7 +43,7 @@ from src.calculator.asymmetric import AsymmetricCalculator
 from src.database.predictions import RepositorioPredicciones
 from src.ingestion.engine import IngestionEngine, NasdaqCandle, parse_raw_candle
 from src.ingestion.huecos import CuotaBasica, recuperar_hueco
-from src.utils.mercado import feriados_desde_entorno
+from src.utils.mercado import ahora_ny, feriados_operativos, ventana_de_consulta
 
 if TYPE_CHECKING:  # solo anotaciones: el lector real se construye en main()
     from src.database.influx_lectura import LectorVelas
@@ -94,7 +94,7 @@ class IngestionScheduler:
         # decir, al arrancar — y en cada tick posterior. La cuota se crea aquí
         # para que sus ventanas duren lo que dura el proceso.
         self.cuota = cuota if cuota is not None else CuotaBasica()
-        self._feriados = feriados if feriados is not None else feriados_desde_entorno()
+        self._feriados = feriados if feriados is not None else feriados_operativos()
 
         colaborores: dict[str, object | None] = {
             "lector": lector, "cliente": cliente, "predicciones": predicciones,
@@ -189,13 +189,43 @@ class IngestionScheduler:
             logger.error("El paso de predicción falló: %s", exc)
 
     async def run(self, max_iterations: int | None = None) -> None:
-        """Cadencia continua (RF-101). `max_iterations` existe solo para pruebas."""
+        """Cadencia continua (RF-101) con PUERTA de sesión (revisión P1.9).
+
+        La fuente solo se consulta de lunes a viernes no feriados dentro de
+        `ventana_de_consulta` (09:30–16:10 ET: sesión + margen de cierre para
+        la última vela): fuera de ahí no se gasta un crédito de la API
+        (~288/día antes de esta puerta). La recuperación de huecos corre en
+        el arranque, en cada tick de sesión y UNA sola vez tras vencido el
+        margen. La fecha y hora de sesión se calculan solo en
+        `src/utils/mercado.py` (America/New_York). `max_iterations` existe
+        solo para pruebas.
+        """
         iterations = 0
+        arranque = True
+        cierre_recuperado: date | None = None
         while max_iterations is None or iterations < max_iterations:
             try:
-                await self.run_once()
+                instante = ahora_ny()
+                ventana = ventana_de_consulta(instante, self._feriados)
+                if ventana == "sesion":
+                    await self.run_once()
+                elif ventana == "cierre":
+                    # Primer tick del margen vencido: cierra los huecos del
+                    # día una sola vez y no vuelve a tocar la fuente hoy.
+                    if arranque or cierre_recuperado != instante.date():
+                        await self._recuperar_huecos()
+                        cierre_recuperado = instante.date()
+                elif arranque:
+                    await self._recuperar_huecos()
+                    logger.info(
+                        "Fuera de sesión (fin de semana, feriado o antes de "
+                        "las 09:30 ET): no se consulta la fuente; los huecos "
+                        "quedaron revisados en el arranque."
+                    )
+                arranque = False
             except Exception as exc:  # un fallo transitorio no debe matar la cadencia
                 logger.error("Ciclo falló (se reintenta en %.0f s): %s", self.interval_s, exc)
+                arranque = False
             iterations += 1
             await asyncio.sleep(self.interval_s)
 
@@ -230,8 +260,8 @@ def main() -> None:
     try:
         if configuraciones.sembrar_inicial():
             logger.info(
-                "Configuración inicial sembrada: Modo Asesor, perfil MODERATE "
-                "(umbral 0,75), límite de pérdida 1,25%%."
+                "Configuración inicial sembrada: Modo Asesor, perfil Moderado "
+                "(umbral 75 %), límite de pérdida 1,25%%."
             )
     except Exception as exc:  # noqa: BLE001 — ver comentario superior
         logger.error("No se pudo sembrar la configuración inicial: %s", exc)

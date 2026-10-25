@@ -21,8 +21,8 @@ from src.endpoints.esquemas import VelasSalida
 router = APIRouter()
 
 NOTA = (
-    "Velas de 5 minutos de QQQ, el índice que sigue el sistema. "
-    "Las agregaciones superiores se guardan en la base de precios."
+    "Velas de 5 minutos de QQQ, fondo cotizado que replica el NASDAQ-100 "
+    "(referencia del sistema)."
 )
 
 

@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 
 from src.utils.fechas import ZONA_MERCADO
 
@@ -96,3 +96,129 @@ def mercado(ahora: datetime, feriados: frozenset[date] = frozenset()) -> EstadoM
     if local.time() >= CIERRE:
         return EstadoMercado(abierto=False, motivo=f"Después del cierre ({HORARIO_REGULAR_TXT})")
     return EstadoMercado(abierto=True, motivo="Horario regular de mercado")
+
+
+# -- ventana de consulta de la fuente (P1.9) -----------------------------------
+
+#: Margen tras el cierre para capturar la última vela del día: la ventana de
+#: consulta de la fuente termina a las 16:10 ET, no en el cierre exacto.
+MARGEN_CIERRE = time(16, 10)
+
+
+def ahora_ny() -> datetime:
+    """Reloj actual en la zona de la sesión: el ÚNICO reloj de sesión (P1.9).
+
+    Toda decisión de «¿es momento de consultar la fuente?» se toma con este
+    reloj (hora de Nueva York); la hora de Colombia solo se usa para mostrar.
+    """
+    return datetime.now(ZONA_MERCADO)
+
+
+def ventana_de_consulta(
+    ahora: datetime, feriados: frozenset[date] = frozenset()
+) -> str:
+    """«¿Vale la pena consultar la fuente ahora?» → `sesion` | `cierre` | `ninguna`.
+
+    De lunes a viernes no feriados: `sesion` entre 09:30 y las 16:10 ET
+    (sesión regular + margen de cierre para la última vela), `cierre` el
+    resto del día (recuperación de huecos, una sola vez) y `ninguna` antes
+    de abrir o en fin de semana/feriado. `ahora` se espera en hora de
+    Nueva York (`ahora_ny()`); con EST/EDT la pared local manda, así que el
+    cambio de hora no requiere ajuste (P1.9 + cruce 30/10→02/11 testado).
+    """
+    if ahora.weekday() >= 5 or ahora.date() in feriados:
+        return "ninguna"
+    minutos = ahora.hour * 60 + ahora.minute
+    apertura = APERTURA.hour * 60 + APERTURA.minute
+    margen = MARGEN_CIERRE.hour * 60 + MARGEN_CIERRE.minute
+    if apertura <= minutos < margen:
+        return "sesion"
+    if minutos >= margen:
+        return "cierre"
+    return "ninguna"
+
+
+# -- feriados NYSE: lista mínima + configurable (P1.9) --------------------------
+
+#: Días en que la NYSE cierra (lista mínima; el resto de los festivos
+#: federales —Columbus y Veterans— NO cierran y por eso no están).
+#: Se añaden los de `FERIADOS_NYSE` vía `feriados_operativos()`.
+
+
+def _pascua(anio: int) -> date:
+    """Domingo de Pascua (Meeus/Jones/Butcher) para el Good Friday."""
+    a = anio % 19
+    b = anio // 100
+    c = anio % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    base = h + l - 7 * m + 114
+    return date(anio, base // 31, base % 31 + 1)
+
+
+def _cuarto_jueves(anio: int, mes: int) -> date:
+    """Cuarto jueves de `mes` (Acción de Gracias)."""
+    d = date(anio, mes, 1)
+    d += timedelta(days=(3 - d.weekday()) % 7)  # primer jueves
+    return d + timedelta(days=21)
+
+
+def _complementario_lunes(anio: int, mes: int) -> date:
+    """Primer lunes de `mes` (MLK, presidentes, trabajo)."""
+    d = date(anio, mes, 1)
+    return d + timedelta(days=(7 - d.weekday()) % 7)
+
+
+def _ultimo_lunes(anio: int, mes: int) -> date:
+    """Último lunes de `mes` (Memorial Day)."""
+    d = date(anio, mes, 31)
+    while d.weekday() != 0:
+        d -= timedelta(days=1)
+    return d
+
+
+def _observado(d: date) -> date:
+    """Sábado → viernes anterior; domingo → lunes siguiente (regla de la NYSE)."""
+    if d.weekday() == 5:
+        return d - timedelta(days=1)
+    if d.weekday() == 6:
+        return d + timedelta(days=1)
+    return d
+
+
+def feriados_nyse_minimos(anio: int) -> frozenset[date]:
+    """Clausuras de la NYSE para `anio` (lista mínima, sin festivos abiertos)."""
+    pascua = _pascua(anio)
+    return frozenset(
+        {
+            _observado(date(anio, 1, 1)),      # Año Nuevo
+            _complementario_lunes(anio, 1) + timedelta(days=14),  # MLK (3.er lunes de enero)
+            _complementario_lunes(anio, 2) + timedelta(days=14),  # Presidentes (3.er lunes)
+            pascua - timedelta(days=2),        # Good Friday
+            _ultimo_lunes(anio, 5),            # Memorial Day
+            _observado(date(anio, 6, 19)),     # Juneteenth
+            _observado(date(anio, 7, 4)),      # Independencia
+            _complementario_lunes(anio, 9),    # Día del Trabajo
+            _cuarto_jueves(anio, 11),          # Acción de Gracias
+            _observado(date(anio, 12, 25)),    # Navidad
+        }
+    )
+
+
+def feriados_operativos() -> frozenset[date]:
+    """Feriados que apagan la consulta a la fuente: mínimos ∪ `FERIADOS_NYSE`.
+
+    La lista base es la de `feriados_nyse_minimos` del año en curso (más el
+    siguiente Año Nuevo, por si el año gira cerca de medianoche); el entorno
+    solo puede AÑADIR días (`FERIADOS_NYSE=YYYY-MM-DD,…`).
+    """
+    hoy = datetime.now(ZONA_MERCADO).date()
+    base = set(feriados_nyse_minimos(hoy.year)) | set(feriados_nyse_minimos(hoy.year + 1))
+    return frozenset(base | set(feriados_desde_entorno()))

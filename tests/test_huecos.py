@@ -342,6 +342,7 @@ class TestCableadoEnElScheduler:
 
         with (
             patch("src.ingestion.scheduler.recuperar_hueco", recuperacion),
+            patch("src.ingestion.scheduler.ventana_de_consulta", return_value="sesion"),
             patch("src.ingestion.scheduler.asyncio.sleep", new_callable=AsyncMock),
         ):
             asyncio.run(scheduler.run(max_iterations=3))

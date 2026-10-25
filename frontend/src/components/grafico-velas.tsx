@@ -212,6 +212,8 @@ export default function GraficoVelas({ velas, cargando, mensaje }: PropsGraficoV
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
         <h2 id="titulo-velas" className="text-sm font-medium text-muted-foreground">
           Velas de 5 minutos · QQQ
+          {/* P1.4: las marcas de tiempo de todo el gráfico son de Colombia. */}
+          <span className="ml-2 font-normal">· hora de Colombia</span>
         </h2>
         {hayMasDeUnDia ? (
           <div role="group" aria-label="Rango del gráfico" className="flex gap-1 text-xs">

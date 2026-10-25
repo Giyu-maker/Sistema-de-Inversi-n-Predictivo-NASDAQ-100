@@ -16,8 +16,13 @@
  *   «28 % de probabilidad de subida» (el modelo no expone probabilidades).
  * - **XAI en 1–2 líneas con «ver detalle»**: el detalle técnico despliega el
  *   `technical_rationale` completo; la jerga vive solo ahí.
- * - **En cerrado**: «Predicción de la sesión anterior» con su fecha; el
- *   mercado cerrado es el estado normal, no un error.
+ * - **Titular = veredicto** (P1.1): «Señal operable» enmarcado o «Sin señal
+ *   operable» —para STABLE, «… · sin movimiento esperado»—; la dirección va
+ *   en el subtítulo con flecha y color normal (P1.2: verde/ámbar/rojo son
+ *   colores del estado del sistema, nunca del mercado).
+ * - **En cerrado**: «Última predicción disponible» con su fecha y la nota
+ *   «de una sesión anterior» cuando corresponde (P1.5); el mercado cerrado
+ *   es el estado normal, no un error.
  * - **Franja de calidad pegada a la tarjeta**, con panel desplegable para lo
  *   técnico (macro-F1, dispositivo, entrenado…).
  */
@@ -26,11 +31,16 @@ import {
   ArrowDown,
   ArrowUp,
   CaretDown,
-  Minus,
 } from '@phosphor-icons/react'
 
 import type { CalidadModelo, EstadoSistema } from '../api/esquemas.ts'
-import { ESPACIO_FINO, formatearRatio } from '../lib/formato.ts'
+import {
+  ESPACIO_FINO,
+  formatearConfianza,
+  formatearPorcentaje,
+  formatearRatio,
+  sesionPrevia,
+} from '../lib/formato.ts'
 
 /** Confianza por debajo de la cual el contrato exige decirlo en llano. */
 const CONFIANZA_BAJA = 0.5
@@ -52,36 +62,27 @@ export function TarjetaSenal({ estado, calidad }: PropsTarjetaSenal) {
   const confianza = prediccion?.confidence_score ?? null
   const esTendencia = tendencia === 'UP' || tendencia === 'DOWN'
 
-  const veredicto = esTendencia ? (
-    tendencia === 'UP' ? (
-      <span className="inline-flex items-center gap-2 text-verde-texto">
-        <ArrowUp weight="bold" className="h-7 w-7" aria-hidden="true" />
-        Tendencia al alza
-      </span>
-    ) : (
-      <span className="inline-flex items-center gap-2 text-ambar-texto">
-        <ArrowDown weight="bold" className="h-7 w-7" aria-hidden="true" />
-        Tendencia a la baja
-      </span>
-    )
-  ) : (
-    <span className="inline-flex items-center gap-2 text-foreground">
-      <Minus weight="bold" className="h-7 w-7" aria-hidden="true" />
-      Sin movimiento esperado
-    </span>
-  )
-
+  // P1.1: el veredicto es el titular (enmarcado solo si es operable) y la
+  // dirección baja al subtítulo en color NORMAL con flecha (P1.2).
+  const operable = esTendencia && senal?.operable === true
   const confianzaBaja =
     confianza !== null && esTendencia && confianza < CONFIANZA_BAJA
+  const previa =
+    prediccion !== null &&
+    prediccion !== undefined &&
+    sesionPrevia(prediccion.prediction_time, estado.ultima_vela?.timestamp ?? null)
 
   return (
     <section aria-labelledby="titulo-senal" className="rounded-2xl border border-border bg-card p-6">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
         <h2 id="titulo-senal" className="text-sm font-medium text-muted-foreground">
-          {enCerrado ? 'Predicción de la sesión anterior' : 'Predicción de la sesión'}
+          {enCerrado ? 'Última predicción disponible' : 'Predicción de la sesión'}
         </h2>
         {prediccion !== null && prediccion !== undefined ? (
-          <span className="dato text-xs text-muted-foreground">{prediccion.fecha}</span>
+          <span className="text-xs text-muted-foreground">
+            <span className="dato">{prediccion.fecha}</span>
+            {previa ? ' · de una sesión anterior' : ''}
+          </span>
         ) : null}
       </div>
 
@@ -91,16 +92,45 @@ export function TarjetaSenal({ estado, calidad }: PropsTarjetaSenal) {
         </p>
       ) : (
         <>
-          <p className="mt-3 text-2xl font-semibold">{veredicto}</p>
+          {/* Titular (P1.1): el veredicto, sin colores de dirección (P1.2). */}
+          <p className="mt-3 text-2xl font-semibold">
+            {operable ? (
+              <span className="inline-flex items-center rounded-xl border border-border bg-secondary px-3 py-0.5">
+                Señal operable
+              </span>
+            ) : esTendencia ? (
+              'Sin señal operable'
+            ) : (
+              'Sin señal operable · sin movimiento esperado'
+            )}
+          </p>
+
+          {/* Subtítulo (P1.1): dirección con flecha en color normal (P1.2) y
+              los números frente al umbral, en porcentajes (P1.8). */}
+          {esTendencia ? (
+            <p className="mt-2 flex flex-wrap items-center gap-x-2 text-sm text-foreground">
+              <span className="inline-flex items-center gap-1.5">
+                {tendencia === 'UP' ? (
+                  <ArrowUp weight="bold" className="h-5 w-5" aria-hidden="true" />
+                ) : (
+                  <ArrowDown weight="bold" className="h-5 w-5" aria-hidden="true" />
+                )}
+                {tendencia === 'UP' ? 'Tendencia al alza' : 'Tendencia a la baja'}
+              </span>
+              {confianzaBaja ? <span>con baja confianza</span> : null}
+              <span className="text-muted-foreground">
+                ({formatearConfianza(confianza ?? 0)} frente a un umbral de{' '}
+                {formatearPorcentaje((senal?.umbral ?? 0) * 100, 0)})
+              </span>
+            </p>
+          ) : null}
 
           <div className="mt-4 flex items-end gap-4">
             <p className="cifra text-5xl leading-none">
-              {formatearRatio(confianza ?? 0)}
+              {formatearConfianza(confianza ?? 0)}
             </p>
             <p className="pb-1 text-sm text-muted-foreground">
-              {confianzaBaja
-                ? 'Tendencia con baja confianza.'
-                : 'Confianza del modelo en esta tendencia.'}
+              Confianza del modelo en esta tendencia.
             </p>
           </div>
 
@@ -121,13 +151,17 @@ export function TarjetaSenal({ estado, calidad }: PropsTarjetaSenal) {
                   style={{ left: `${Math.min(confianza ?? 0, 1) * 100}%` }}
                 />
               </div>
-              <div className="mt-2 flex justify-between text-xs text-muted-foreground">
+              {/* P1.3: leyenda con las MISMAS formas que las marcas — ◆ la del
+                  rombo de confianza y | la del tick del umbral — para que los
+                  números no parezcan posiciones sobre la regla. */}
+              <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
                 <span>
-                  Umbral del perfil: <span className="dato">{formatearRatio(senal.umbral)}</span>
+                  <span aria-hidden="true">◆ </span>Confianza actual:{' '}
+                  <span className="dato">{formatearConfianza(confianza ?? 0)}</span>
                 </span>
                 <span>
-                  Confianza actual:{' '}
-                  <span className="dato">{formatearRatio(confianza ?? 0)}</span>
+                  <span aria-hidden="true">| </span>Umbral del perfil:{' '}
+                  <span className="dato">{formatearPorcentaje(senal.umbral * 100, 0)}</span>
                 </span>
               </div>
             </div>

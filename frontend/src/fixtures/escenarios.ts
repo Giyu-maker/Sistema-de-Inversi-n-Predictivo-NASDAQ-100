@@ -79,8 +79,8 @@ const PERFIL = 'MODERATE'
 const UMBRAL = 0.75
 
 const NOTA_VELAS =
-  'Velas de 5 minutos de QQQ, el índice que sigue el sistema. ' +
-  'Las agregaciones superiores se guardan en la base de precios.'
+  'Velas de 5 minutos de QQQ, fondo cotizado que replica el NASDAQ-100 ' +
+  '(referencia del sistema).'
 const NOTA_RENDIMIENTO =
   'Rendimiento virtual calculado sobre los precios históricos: sin capital en ' +
   'riesgo y sin órdenes enviadas (Modo Asesor).'
@@ -98,7 +98,7 @@ const MOTIVO_ABIERTO = 'Horario regular de mercado'
 const MOTIVO_CIERRADO = 'Después del cierre (09:30-16:00 ET)'
 const MOTIVO_VERDE = 'Dato actualizado, IA disponible y última predicción sin movimiento.'
 const MOTIVO_CIERRA = 'Mercado cerrado: Después del cierre (09:30-16:00 ET).'
-const MOTIVO_ULTIMA_UP = 'La última predicción no es estable: es tendencia al alza.'
+const MOTIVO_INESTABLE = 'Mercado inestable: la IA espera movimiento en los próximos 15 minutos'
 
 const MOTIVO_PENDIENTE =
   'Horizonte de 15 min aún no completo: la predicción está entre las 3 ' +
@@ -107,7 +107,7 @@ const MOTIVO_DISPONIBLE = 'Horizonte de 15 min completo dentro de la sesión.'
 const MOTIVO_NO_APLICA =
   'El horizonte de 15 min cae fuera de la sesión (cierre de mercado).'
 const MOTIVO_SIN_VELAS =
-  'Sin velas registradas: no hay datos en horario de mercado.'
+  'Revisar el sistema: sin velas registradas en horario de mercado'
 const MOTIVO_RENDIMIENTO_SIN_VELAS = 'Sin velas registradas en la serie.'
 
 /** Aviso de `predictions` cuando la ventana de 12 velas aún no está completa. */
@@ -122,11 +122,6 @@ function redondear(valor: number, decimales: number): number {
   return Math.round(valor * factor) / factor
 }
 
-/** Mismo criterio que `_numero()` de `src/security/perfiles.py`. */
-function dos(valor: number): string {
-  return valor.toFixed(2).replace('.', ',')
-}
-
 // -- señales: réplicas de `src/security/perfiles.py` -------------------------
 
 /** Copia literal de `UMBRALES_POR_PERFIL` (RF-403). */
@@ -136,12 +131,24 @@ const UMBRALES: Record<string, number> = {
   AGGRESSIVE: 0.65,
 }
 
+/** Réplica de `_porcentaje` de `perfiles.py`: 0.75 → «75 %» (P1.8). */
+function pct(valor: number, decimales = 1): string {
+  return `${(valor * 100).toFixed(decimales).replace('.', ',')} %`
+}
+
+//: Nombres en español de los perfiles (RF-403, P1.8) — réplica del backend.
+const NOMBRES_PERFIL: Record<string, string> = {
+  CONVENTIONAL: 'Conservador',
+  MODERATE: 'Moderado',
+  AGGRESSIVE: 'Agresivo',
+}
+
 function senalOperable(tendencia: string, confianza: number, perfil: string): Senal {
   const umbral = UMBRALES[perfil]
   const plano = tendencia === 'UP' ? 'al alza' : 'a la baja'
   return {
     operable: true,
-    motivo: `Señal operable: tendencia ${plano} con confianza ${dos(confianza)} ≥ umbral ${dos(umbral)} del perfil ${perfil}.`,
+    motivo: `Señal operable: tendencia ${plano} con confianza ${pct(confianza)} ≥ umbral ${pct(umbral, 0)} del perfil ${NOMBRES_PERFIL[perfil] ?? perfil}.`,
     umbral,
     perfil,
     tendencia,
@@ -153,7 +160,7 @@ function senalBaja(tendencia: string, confianza: number, perfil: string): Senal 
   const umbral = UMBRALES[perfil]
   return {
     operable: false,
-    motivo: `Confianza ${dos(confianza)} por debajo del umbral ${dos(umbral)} del perfil ${perfil}.`,
+    motivo: `Confianza ${pct(confianza)} por debajo del umbral ${pct(umbral, 0)} del perfil ${NOMBRES_PERFIL[perfil] ?? perfil}.`,
     umbral,
     perfil,
     tendencia,
@@ -179,7 +186,7 @@ function senalSinPrediccion(perfil: string): Senal {
     operable: false,
     motivo:
       'Sin predicción registrada: no hay señal que evaluar. ' +
-      `Umbral del perfil ${perfil}: ${dos(UMBRALES[perfil])}.`,
+      `Umbral del perfil ${NOMBRES_PERFIL[perfil] ?? perfil}: ${pct(UMBRALES[perfil], 0)}.`,
     umbral: UMBRALES[perfil],
     perfil,
     tendencia: null,
@@ -356,7 +363,7 @@ function calidadSimulada(ahora: number, cambios: Partial<CalidadModelo> = {}): C
     feature_schema_version: '1',
     entrenado_en_ms: ahora - 2 * 60 * 60 * 1000,
     entrenado_en: formatearFecha(ahora - 2 * 60 * 60 * 1000),
-    dispositivo_entrenamiento: 'cpu',
+    dispositivo_entrenamiento: 'CPU',
     macro_f1_test: 0.4313,
     banda_stable_pct: BANDA_PCT,
     acierto_direccional: {
@@ -551,7 +558,7 @@ function escenarioSenalOperable(ahora: number): DatosEscenario {
   return {
     status: {
       estado: 'AMARILLO',
-      motivo: MOTIVO_ULTIMA_UP,
+      motivo: MOTIVO_INESTABLE,
       mercado: { abierto: true, motivo: MOTIVO_ABIERTO, feriado: false, zona: ZONA_MERCADO, horario: HORARIO },
       ultima_vela: resumen(ultimaVela, ahora),
       retraso_max_s: 600,
@@ -684,7 +691,7 @@ function escenarioExtremos(ahora: number): DatosEscenario {
   return {
     status: {
       estado: 'AMARILLO',
-      motivo: 'La última predicción no es estable: es tendencia a la baja.',
+      motivo: MOTIVO_INESTABLE,
       mercado: { abierto: true, motivo: MOTIVO_ABIERTO, feriado: false, zona: ZONA_MERCADO, horario: HORARIO },
       ultima_vela: resumen(ultimaVela, ahora),
       retraso_max_s: 600,
@@ -710,7 +717,7 @@ function escenarioExtremos(ahora: number): DatosEscenario {
     calidad: calidadSimulada(ahora, {
       macro_f1_test: 0.9987,
       banda_stable_pct: 5,
-      dispositivo_entrenamiento: 'cuda:0',
+      dispositivo_entrenamiento: 'CUDA:0',
       entrenado_en_ms: ahora - 400 * 24 * 60 * 60 * 1000,
       entrenado_en: formatearFecha(ahora - 400 * 24 * 60 * 60 * 1000),
       acierto_direccional: {
@@ -808,8 +815,8 @@ function escenarioDatoDesactualizado(ahora: number): DatosEscenario {
     status: {
       estado: 'AMARILLO',
       motivo:
-        `Sin datos en horario de mercado: la última vela tiene ` +
-        `${Math.floor(antiguedadS / 60)} min de antigüedad (máximo 10 min).`,
+        `Revisar el sistema: datos desactualizados (la última vela tiene ` +
+        `${Math.floor(antiguedadS / 60)} min de antigüedad, máximo 10 min)`,
       mercado: { abierto: true, motivo: MOTIVO_ABIERTO, feriado: false, zona: ZONA_MERCADO, horario: HORARIO },
       ultima_vela: resumen(ultimaVela, ahora),
       retraso_max_s: 600,

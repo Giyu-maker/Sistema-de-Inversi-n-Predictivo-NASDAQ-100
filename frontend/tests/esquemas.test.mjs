@@ -229,7 +229,7 @@ test('sin-predicciones: verde, sin señal y con el copy literal del backend', ()
   assert.equal(status.senal.operable, false)
   assert.equal(
     status.senal.motivo,
-    'Sin predicción registrada: no hay señal que evaluar. Umbral del perfil MODERATE: 0,75.',
+    'Sin predicción registrada: no hay señal que evaluar. Umbral del perfil Moderado: 75 %.',
   )
   const ultima = servirEscenario('sin-predicciones', '/api/predictions/latest', Date.now())
   assert.equal(ultima.encontrada, false)

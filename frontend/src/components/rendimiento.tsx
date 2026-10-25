@@ -66,7 +66,7 @@ export function Rendimiento({ rendimiento }: PropsRendimiento) {
 
           <dl className="mt-4 space-y-2 text-sm">
             <div className="flex items-baseline justify-between gap-3 border-b border-border pb-1">
-              <dt className="text-muted-foreground">Variación del índice (QQQ)</dt>
+              <dt className="text-muted-foreground">Variación de QQQ</dt>
               <dd className="dato">
                 {formatearPorcentajeFirmado(rendimiento.variacion_nasdaq_pct ?? 0)}
               </dd>

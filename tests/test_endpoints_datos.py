@@ -55,7 +55,8 @@ class TestCandles:
         assert lector.consultas_ultimas == [200]
         assert cuerpo["total"] == 78
         assert cuerpo["aggregate"] == "5m"
-        assert "QQQ" in cuerpo["nota"] and "base de precios" in cuerpo["nota"]
+        # P1.6: QQQ no es el índice — se nombra como lo que es.
+        assert "QQQ" in cuerpo["nota"] and "NASDAQ-100" in cuerpo["nota"]
 
     def test_limit_se_pasa_al_lector(self) -> None:
         lector = LectorFalso(SERIE_COMPLETA)
@@ -240,8 +241,8 @@ class TestUltimaPrediccion:
         assert cuerpo["senal"] == {
             "operable": True,
             "motivo": (
-                "Señal operable: tendencia al alza con confianza 0,90 "
-                "≥ umbral 0,75 del perfil MODERATE."
+                "Señal operable: tendencia al alza con confianza 90,0 % "
+                "≥ umbral 75 % del perfil Moderado."
             ),
             "umbral": 0.75,
             "perfil": "MODERATE",
@@ -396,5 +397,6 @@ class TestErroresEnEspañol:
         assert respuesta.status_code == 200
         cuerpo = respuesta.json()
         assert cuerpo["estado"] == "AMARILLO"
-        assert "Sin velas registradas" in cuerpo["motivo"]
+        assert "Revisar el sistema" in cuerpo["motivo"]
+        assert "sin velas registradas en horario de mercado" in cuerpo["motivo"]
         assert cuerpo["ultima_vela"] is None

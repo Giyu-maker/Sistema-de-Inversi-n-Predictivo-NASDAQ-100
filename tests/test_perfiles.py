@@ -58,11 +58,13 @@ class TestUmbralDeConfianza:
         senal = evaluar_senal("UP", round(umbral - 0.01, 4), perfil)
         assert senal.operable is False
         assert senal.umbral == umbral
-        # El motivo dice el número (coma decimal, español) y el perfil: el
-        # operador debe poder leer por qué no, sin mirar el código.
-        umbral_escrito = f"{umbral:.2f}".replace(".", ",")
+        # El motivo dice el porcentaje (español) y el nombre en español del
+        # perfil (RF-403): el operador debe poder leer por qué no, sin mirar
+        # el código ni traducir MODERATE.
+        umbral_escrito = f"{umbral * 100:.0f} %"
         assert f"umbral {umbral_escrito}" in senal.motivo
-        assert perfil in senal.motivo
+        nombre = {"CONVENTIONAL": "Conservador", "MODERATE": "Moderado", "AGGRESSIVE": "Agresivo"}
+        assert nombre[perfil] in senal.motivo
 
     @pytest.mark.parametrize("perfil,umbral", sorted(UMBRALES_POR_PERFIL.items()))
     def test_en_el_umbral_y_encima_es_operable(self, perfil: str, umbral: float) -> None:

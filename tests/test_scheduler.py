@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from src.ingestion.engine import parse_raw_candle
+from src.ingestion.huecos import InformeHueco
 from src.ingestion.scheduler import IngestionScheduler, _sorted_candles, _variation_pct
 
 _LATEST_RAW = {
@@ -93,7 +94,10 @@ def test_run_respeta_la_cadencia_en_varias_iteraciones() -> None:
     engine, calculator = _engine(_payload()), _calculator()
     scheduler = IngestionScheduler(engine, calculator, interval_s=300.0)  # type: ignore[arg-type]
 
-    with patch("src.ingestion.scheduler.asyncio.sleep", new_callable=AsyncMock) as sleep:
+    with (
+        patch("src.ingestion.scheduler.asyncio.sleep", new_callable=AsyncMock) as sleep,
+        patch("src.ingestion.scheduler.ventana_de_consulta", return_value="sesion"),
+    ):
         asyncio.run(scheduler.run(max_iterations=3))
 
     assert engine.fetch_nasdaq_quote.await_count == 3
@@ -107,11 +111,49 @@ def test_run_sobrevive_a_un_fallo_de_red() -> None:
     engine.fetch_nasdaq_quote.side_effect = OSError("red caída")
     scheduler = IngestionScheduler(engine, calculator, interval_s=0.0)  # type: ignore[arg-type]
 
-    with patch("src.ingestion.scheduler.asyncio.sleep", new_callable=AsyncMock):
+    with (
+        patch("src.ingestion.scheduler.asyncio.sleep", new_callable=AsyncMock),
+        patch("src.ingestion.scheduler.ventana_de_consulta", return_value="sesion"),
+    ):
         asyncio.run(scheduler.run(max_iterations=2))  # no debe lanzar excepción
 
     assert engine.fetch_nasdaq_quote.await_count == 2
     engine.write_to_influx.assert_not_awaited()
+
+
+def test_fuera_de_sesion_no_consulta_la_fuente_y_recupera_una_vez() -> None:
+    """P1.9: sin ventana de sesión no se gasta ni un crédito (~288/día antes)."""
+    engine, calculator = _engine(_payload()), _calculator()
+    scheduler = IngestionScheduler(engine, calculator, interval_s=0.0)  # type: ignore[arg-type]
+    recuperacion = AsyncMock(return_value=InformeHueco("sin-hueco"))
+
+    with (
+        patch("src.ingestion.scheduler.asyncio.sleep", new_callable=AsyncMock),
+        patch("src.ingestion.scheduler.ventana_de_consulta", return_value="ninguna"),
+        patch("src.ingestion.scheduler.recuperar_hueco", recuperacion),
+    ):
+        asyncio.run(scheduler.run(max_iterations=4))
+
+    assert recuperacion.await_count == 1  # solo el arranque
+    engine.fetch_nasdaq_quote.assert_not_awaited()
+    engine.write_to_influx.assert_not_awaited()
+
+
+def test_tras_el_cierre_la_recuperacion_corre_una_sola_vez() -> None:
+    """P1.9: tras el margen de cierre, UNA recuperación del día y sin fetch."""
+    engine, calculator = _engine(_payload()), _calculator()
+    scheduler = IngestionScheduler(engine, calculator, interval_s=0.0)  # type: ignore[arg-type]
+    recuperacion = AsyncMock(return_value=InformeHueco("sin-hueco"))
+
+    with (
+        patch("src.ingestion.scheduler.asyncio.sleep", new_callable=AsyncMock),
+        patch("src.ingestion.scheduler.ventana_de_consulta", return_value="cierre"),
+        patch("src.ingestion.scheduler.recuperar_hueco", recuperacion),
+    ):
+        asyncio.run(scheduler.run(max_iterations=5))
+
+    assert recuperacion.await_count == 1
+    engine.fetch_nasdaq_quote.assert_not_awaited()
 
 
 def test_sorted_candles_ordena_por_timestamp_no_por_insercion() -> None:

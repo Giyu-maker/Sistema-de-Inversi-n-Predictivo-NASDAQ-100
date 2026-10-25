@@ -94,7 +94,7 @@ class TestAmarillo:
         ).get("/api/status").json()
 
         assert cuerpo["estado"] == "AMARILLO"
-        assert "Sin datos en horario de mercado" in cuerpo["motivo"]
+        assert "datos desactualizados" in cuerpo["motivo"]
         assert cuerpo["retraso_max_s"] == 600  # 2 intervalos de vela
 
     def test_ia_no_responde(self) -> None:
@@ -128,7 +128,9 @@ class TestAmarillo:
         ).get("/api/status").json()
 
         assert cuerpo["estado"] == "AMARILLO"
-        assert "es tendencia al alza" in cuerpo["motivo"]
+        assert "Mercado inestable" in cuerpo["motivo"]
+        # P1.7/honestidad: el estado NO comunica dirección de mercado.
+        assert "al alza" not in cuerpo["motivo"]
         # Y la señal se evalúa igual: 0,9 ≥ 0,75 del perfil por defecto.
         assert cuerpo["senal"]["operable"] is True
         assert cuerpo["senal"]["umbral"] == 0.75

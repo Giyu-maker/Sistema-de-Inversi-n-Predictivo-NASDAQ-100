@@ -76,9 +76,18 @@ def perfil_valido(perfil: str) -> bool:
     return perfil in UMBRALES_POR_PERFIL
 
 
-def _numero(valor: float) -> str:
-    """0.75 → «0,75»: la interfaz es español neutro y aquí se escribe texto."""
-    return f"{valor:.2f}".replace(".", ",")
+#: Nombres en español de los perfiles (RF-403, revisión de capturas P1.8) para
+#: el texto que lee el operador; el enum del contrato sigue siendo el código.
+NOMBRES_EN_ESPANOL: dict[str, str] = {
+    "CONVENTIONAL": "Conservador",
+    "MODERATE": "Moderado",
+    "AGGRESSIVE": "Agresivo",
+}
+
+
+def _porcentaje(valor: float, decimales: int = 1) -> str:
+    """0.276 → «27,6 %»: porcentajes en los textos, nunca 0,28 (P1.8)."""
+    return f"{valor * 100:.{decimales}f}".replace(".", ",") + " %"
 
 
 def evaluar_senal(tendencia: str, confianza: float, perfil: str) -> Senal:
@@ -115,8 +124,8 @@ def evaluar_senal(tendencia: str, confianza: float, perfil: str) -> Senal:
         return Senal(
             operable=False,
             motivo=(
-                f"Confianza {_numero(confianza)} por debajo del umbral "
-                f"{_numero(umbral)} del perfil {perfil}."
+                f"Confianza {_porcentaje(confianza)} por debajo del umbral "
+                f"{_porcentaje(umbral, 0)} del perfil {NOMBRES_EN_ESPANOL[perfil]}."
             ),
             umbral=umbral,
             perfil=perfil,
@@ -127,7 +136,8 @@ def evaluar_senal(tendencia: str, confianza: float, perfil: str) -> Senal:
         operable=True,
         motivo=(
             f"Señal operable: tendencia {EN_LLANO[tendencia]} con confianza "
-            f"{_numero(confianza)} ≥ umbral {_numero(umbral)} del perfil {perfil}."
+            f"{_porcentaje(confianza)} ≥ umbral {_porcentaje(umbral, 0)} "
+            f"del perfil {NOMBRES_EN_ESPANOL[perfil]}."
         ),
         umbral=umbral,
         perfil=perfil,
@@ -143,7 +153,7 @@ def senal_sin_prediccion(perfil: str) -> Senal:
         operable=False,
         motivo=(
             "Sin predicción registrada: no hay señal que evaluar. "
-            f"Umbral del perfil {perfil}: {_numero(umbral)}."
+            f"Umbral del perfil {NOMBRES_EN_ESPANOL[perfil]}: {_porcentaje(umbral, 0)}."
         ),
         umbral=umbral,
         perfil=perfil,

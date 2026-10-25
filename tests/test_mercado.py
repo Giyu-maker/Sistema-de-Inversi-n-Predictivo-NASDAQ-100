@@ -12,7 +12,12 @@ from datetime import date, datetime, timezone
 import pytest
 
 from src.utils.fechas import ZONA_MERCADO
-from src.utils.mercado import feriados_desde_entorno, mercado
+from src.utils.mercado import (
+    feriados_desde_entorno,
+    feriados_nyse_minimos,
+    mercado,
+    ventana_de_consulta,
+)
 
 
 def _en_et(hora: int, minuto: int = 0, *, dia: int = 16, mes: int = 10) -> datetime:
@@ -73,6 +78,62 @@ class TestFeriados:
 
     def test_feriado_mal_escrito_se_ignora_y_no_tumba_el_servicio(self) -> None:
         assert feriados_desde_entorno("26-11-2026, no-una-fecha") == frozenset()
+
+
+def _ny(texto: str) -> datetime:
+    """ISO sin zona → instante en la zona de la sesión (America/New_York)."""
+    return datetime.fromisoformat(texto).replace(tzinfo=ZONA_MERCADO)
+
+
+class TestVentanaDeConsulta:
+    """P1.9: la fuente solo se consulta L–V 09:30–16:10 ET, hora de NY."""
+
+    def test_sesion_de_verano_con_margen_de_cierre(self) -> None:
+        assert ventana_de_consulta(_ny("2026-10-20T11:00")) == "sesion"
+        assert ventana_de_consulta(_ny("2026-10-20T16:05")) == "sesion"  # última vela
+        assert ventana_de_consulta(_ny("2026-10-20T16:15")) == "cierre"
+        assert ventana_de_consulta(_ny("2026-10-20T08:00")) == "ninguna"
+
+    def test_sesion_de_invierno_tras_el_cambio_de_hora(self) -> None:
+        # Posterior al 01/11/2026 (EST): la pared local de NY manda.
+        assert ventana_de_consulta(_ny("2026-11-03T11:00")) == "sesion"
+        assert ventana_de_consulta(_ny("2026-11-03T16:20")) == "cierre"
+
+    def test_fin_de_semana_y_feriado_no_consultan(self) -> None:
+        assert ventana_de_consulta(_ny("2026-10-24T12:00")) == "ninguna"  # sábado
+        assert ventana_de_consulta(_ny("2026-10-25T12:00")) == "ninguna"  # domingo
+        feriados = feriados_nyse_minimos(2026)
+        accion = _ny("2026-11-26T11:00")  # Acción de Gracias
+        assert ventana_de_consulta(accion, feriados) == "ninguna"
+
+    def test_cruce_del_cambio_de_hora_vie_30_10_a_lun_02_11(self) -> None:
+        # Viernes en EDT y lunes en EST: la ventana no se desplaza ni un minuto.
+        assert ventana_de_consulta(_ny("2026-10-30T09:35")) == "sesion"
+        assert ventana_de_consulta(_ny("2026-10-30T16:05")) == "sesion"
+        assert ventana_de_consulta(_ny("2026-11-01T12:00")) == "ninguna"  # gira el reloj
+        assert ventana_de_consulta(_ny("2026-11-02T09:35")) == "sesion"
+        assert ventana_de_consulta(_ny("2026-11-02T16:15")) == "cierre"
+
+
+class TestFeriadosNyseMinimos:
+    """Lista mínima de cierres de la NYSE (P1.9), configurable por entorno."""
+
+    def test_dias_conocidos_de_2026(self) -> None:
+        f = feriados_nyse_minimos(2026)
+        assert date(2026, 1, 1) in f    # Año Nuevo
+        assert date(2026, 1, 19) in f   # MLK (3.er lunes)
+        assert date(2026, 2, 16) in f   # Presidentes (3.er lunes)
+        assert date(2026, 4, 3) in f    # Good Friday (Pascua 05/04)
+        assert date(2026, 5, 25) in f   # Memorial (último lunes)
+        assert date(2026, 7, 3) in f    # 4 de julio cae sábado → viernes
+        assert date(2026, 9, 7) in f    # Trabajo (1.er lunes)
+        assert date(2026, 11, 26) in f  # Acción de Gracias (4.º jueves)
+        assert date(2026, 12, 25) in f  # Navidad
+
+    def test_dias_que_la_nyse_abre_no_estan(self) -> None:
+        f = feriados_nyse_minimos(2026)
+        assert date(2026, 10, 12) not in f  # Columbus Day: la NYSE abre
+        assert date(2026, 11, 11) not in f  # Veterans Day: la NYSE abre
         assert feriados_desde_entorno("2026-11-26") == frozenset({date(2026, 11, 26)})
         assert feriados_desde_entorno("") == frozenset()
 

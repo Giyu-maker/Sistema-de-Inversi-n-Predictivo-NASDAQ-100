@@ -86,3 +86,37 @@ test('minutosDelDia lee la zona que se le pida', () => {
   assert.equal(minutosDelDia(Date.UTC(2026, 9, 21, 13, 30, 0), ZONA_MERCADO), 9 * 60 + 30)
   assert.equal(minutosDelDia(Date.UTC(2026, 9, 21, 13, 30, 0), ZONA_COLOMBIA), 8 * 60 + 30)
 })
+
+// -- revisión de capturas P1 (confianza, ET, sesión previa) -------------------
+
+import { formatearConfianza, formatearHoraET, sesionPrevia } from '../src/lib/formato.ts'
+
+test('formatearConfianza nunca devuelve «100,0 %» (P1.10)', () => {
+  assert.equal(formatearConfianza(0.276), `27,6${ESPACIO_FINO}%`)
+  assert.equal(formatearConfianza(0.9994), `99,9${ESPACIO_FINO}%`)
+  assert.equal(formatearConfianza(0.9999), `más de 99,9${ESPACIO_FINO}%`)
+  assert.equal(formatearConfianza(1), `más de 99,9${ESPACIO_FINO}%`)
+})
+
+test('formatearHoraET pinta la hora de la sesión en ET (P1.4)', () => {
+  // 23/10/2026 19:55 UTC = 15:55 EDT (cierre real de la sesión del viernes).
+  assert.equal(formatearHoraET(Date.UTC(2026, 9, 23, 19, 55)), '15:55 ET')
+  // 04/11/2026 20:00 UTC = 15:00 EST (ya en horario de invierno).
+  assert.equal(formatearHoraET(Date.UTC(2026, 10, 4, 20, 0)), '15:00 ET')
+})
+
+test('sesionPrevia distingue la última sesión (P1.5)', () => {
+  const viernes = Date.UTC(2026, 9, 23, 18, 0) // viernes 23/10 · 14:00 ET
+  const miercoles = Date.UTC(2026, 9, 21, 16, 0) // miércoles 21/10 · 12:00 ET
+  // Misma sesión (predicción y vela del viernes): no es previa.
+  assert.equal(sesionPrevia(viernes, viernes), false)
+  // Predicción de una sesión anterior a la última vela: es previa.
+  assert.equal(sesionPrevia(miercoles, viernes), true)
+  // Sin velas no hay sesión de referencia que calificar.
+  assert.equal(sesionPrevia(miercoles, null), false)
+  // Las fechas se comparan en ET: 04/11/2026 (EST) ≠ 03/11/2026.
+  assert.equal(
+    sesionPrevia(Date.UTC(2026, 10, 3, 18, 0), Date.UTC(2026, 10, 4, 18, 0)),
+    true,
+  )
+})
