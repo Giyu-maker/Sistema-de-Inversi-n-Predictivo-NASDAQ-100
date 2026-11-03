@@ -267,3 +267,202 @@ La API **no tiene autenticación, ni usuarios, ni roles**. Es una brecha **decla
 ### Impacto
 
 Funcional: ninguno sobre lo ya aprobado — no modifica ningún RF-XXX ni RNF-XXX existente; añade la interfaz que el Ítem 8 necesita. La medición de RNF-003 (ver `docs/backlog.md`) queda **provisional** hasta que la quinta componente, la actualización de la interfaz, exista en la Fase B2.
+
+---
+
+## CR-005 — Kill-Switch del Sprint 4: estado persistido, inmutabilidad de la auditoría y broker simulado
+
+| Campo | Valor |
+|---|---|
+| **Fecha de detección** | Sprint 4 — alcance mínimo aprobado (Ítems 9, 10 y parte del 12) |
+| **Solicitante** | Equipo de desarrollo (Naranja's Team) |
+| **Documentos afectados** | SDD §3.1.1 (esquema físico), §5.4 (`RiskManager`), §8 (trazabilidad RF-402/501/502/601); SRS §3.5 (Feature 5), §3.7.1 (RF-701), RNF-010; SRS §4.2.5 (`AuditLog`) |
+| **Tipo** | Adición de diseño / interpretación de requisito |
+| **Prioridad** | Alta (es la pieza de protección de capital) |
+| **Estado** | Implementado y verificado en PostgreSQL real; pendiente de aprobación formal |
+
+### Contexto
+
+El SRS describe **qué** debe hacer el Kill-Switch (RF-501/502/503) y el SDD
+le da una clase (`KillSwitchEngine`, `RiskManager`, `BrokerGateway`), pero
+cuatro cosas no están decididas en ningún documento aprobado y hubo que
+decidirlas para poder implementar:
+
+1. **Dónde vive el estado.** RF-501 exige que el bloqueo sobreviva a un
+   reinicio del proceso; el SDD no prevé ninguna tabla para eso.
+2. **Qué significa «prioridad de hilos de CPU»** (RNF-010) en Python, que no
+   tiene prioridades de hilo utilizables sin privilegios de root.
+3. **Con qué broker** se liquida: el Ítem 12 (TCP real con IB) quedó fuera
+   del alcance mínimo, pero RF-601/602 exigen el Modo Sombra.
+4. **Qué garantiza que la auditoría es «inalterable»** (RF-701, SRS §3.7.1):
+   el SRS solo lo declara para InfluxDB (§4.4), no para PostgreSQL.
+
+### Cambio aprobado (implementado en C1–C4)
+
+**1. Esquema (SDD §3.1.1):**
+
+- Tabla nueva **`kill_switch_state`** (singleton por convención, como
+  `system_configurations`): `activo`, `motivo`, `origen`
+  (`MANUAL`|`AUTOMATICO`), `actor` (`SISTEMA`|`OPERADOR`), recorrido de la
+  liquidación (`NINGUNA`→`PENDIENTE`→`EN_CURSO`→`COMPLETADA`/`FALLIDA`),
+  acumulado de liquidaciones, `reinicio_en` + `sesion_reinicio` (guarda
+  anti-bucle del disparo automático) y el contador de intentos de reinicio.
+- Columna nueva **`actor`** en `audit_logs` (`VARCHAR(50) NOT NULL`, CHECK
+  `SISTEMA|OPERADOR|CLAVE_REINICIO`, **sin default permanente**). Migración
+  idempotente en un bloque `DO` colocada **antes** de los triggers, porque su
+  backfill es un `UPDATE`: con el trigger puesto, la propia migración se
+  rechazaría. En el volumen previo se rellena con `SISTEMA`.
+
+**2. Inmutabilidad de `audit_logs` a nivel de BASE DE DATOS (RF-701):**
+
+- `BEFORE UPDATE OR DELETE … FOR EACH ROW` → `RAISE EXCEPTION`.
+- `BEFORE TRUNCATE … FOR EACH STATEMENT` → `RAISE EXCEPTION` (los triggers
+  por fila **no** se disparan ante un `TRUNCATE`: sin este, la tabla
+  entera se podría vaciar en una sentencia).
+- `ENABLE ALWAYS` en ambos, y `REVOKE UPDATE, DELETE, TRUNCATE … FROM
+  PUBLIC` como segunda muralla.
+- **Riesgo residual declarado:** el servicio entra como superusuario, que
+  salta los permisos (los triggers, no). Dejar de entrar como superusuario
+  —rol de mínimo privilegio— queda como trabajo futuro.
+
+**3. Interpretación de RNF-010 («prioridad a nivel de hilos de CPU»):**
+
+No aplica literalmente en Python. Lo implementado, y lo que se reporta como
+cumplimiento, es: (a) el camino de activación no tiene ni un `await` ni una
+llamada a la base **antes** de poner la bandera en memoria; (b) todo lo que
+emite órdenes consulta la bandera antes que cualquier cálculo;
+(c) las tareas de orden pendientes se cancelan al activarse; (d) se miden
+pulsación→bloqueo y pulsación→liquidación (ver §6 del informe).
+
+**4. Orden de ejecución y regla 3 (SDD §7):**
+
+`(a)` bandera en memoria → `(b)` compare-and-set en PostgreSQL (mejor
+esfuerzo) → `(c)` liquidación → `(d)` auditoría (mejor esfuerzo, con
+respaldo en `logs/auditoria-pendiente.jsonl` y volcado posterior). **La
+regla 3 estricta no aplica a este camino**: un botón de pánico que esperara
+a PostgreSQL no sería un botón de pánico. Sí aplica —sin excepciones— al
+resto de acciones (órdenes, cambio de modo, reinicio). Si el estado no se
+puede leer, se **falla cerrado**: no se emiten órdenes.
+
+**5. Broker simulado en lugar de IB real (RF-402, RF-601, RF-602):**
+
+`BrokerGateway` (Protocol) + `SimulatedBrokerGateway`, que registra todo con
+`is_simulated = true` y lo liga a su `prediction_id`. El precio sale de un
+callable inyectado **antes** de escribir: si la fuente no responde, no queda
+una orden con precio inventado. Cambiar a TCP real es implementar el mismo
+Protocol en `src/integration/`, sin tocar `src/security/`.
+
+**6. Desviación sobre el SDD §5.4:** `evaluate_order_risk` delega en
+`perfiles.umbral_de` (que **lanza** ante un perfil desconocido) en lugar del
+`.get(perfil, 0.75)` del SDD, que caería en silencio al umbral por defecto.
+
+**7. Disparo automático:** en cada tick del scheduler, tras persistir la
+vela, contra el precio de **apertura de la sesión** con
+`AsymmetricCalculator.is_threshold_breached`. Actor `SISTEMA`, origen
+`AUTOMATICO`. Dispara **aunque no haya posiciones** (lo que importa es
+bloquear, RF-503). Tras un reinicio, no se vuelve a evaluar hasta la
+siguiente sesión. Si es un gap (RF-203), el payload registra la pérdida
+**real** y su diferencia con el límite.
+
+### Verificación (contra el motor real, no supuestos)
+
+- **PostgreSQL real** (`ritech-postgres16`): `UPDATE`, `DELETE` y
+  `TRUNCATE` rechazados con un INSERT de control en la misma transacción
+  (psql sale con `ON_ERROR_STOP` y la transacción se revuelve sola: no
+  queda ningún marcador); `tgenabled = 'A'` leído del catálogo; el `REVOKE`
+  probado con un rol **no superusuario**; idempotencia del DDL (dos
+  aplicaciones seguidas).
+- **Idempotencia del disparo:** el compare-and-set probado en vivo —una
+  sola ganancia por activación—, más la prueba de «pulsar dos veces no
+  liquidó dos veces» (el acumulado `liquidaciones` lo demuestra en la base).
+- **876 pruebas** en verde (`pytest -q`), 47 de frontend (`node --test`),
+  `oxlint` y `vite build` sin avisos.
+- **Latencias RNF-010** (informe §4): pulsación→respuesta HTTP
+  p50 1,48 ms / p95 2,56 ms; banda + CAS real + liquidación p50 0,003 /
+  p95 0,004 ms (bloqueo) y p50 0,004 / p95 0,005 ms (liquidación).
+
+### Impacto
+
+Funcional: ninguno sobre lo ya aprobado — no modifica ningún RF/RNF
+existente; añade el estado y la garantía que RF-501 y RF-701 exigen. Deuda
+abierta: el riesgo del superusuario (arriba) y el Ítem 12 (IB real).
+
+---
+
+## CR-006 — Autenticación mínima del Sprint 4: sin usuarios ni roles, con clave de reinicio
+
+| Campo | Valor |
+|---|---|
+| **Fecha de detección** | Sprint 4 — recorte de alcance por falta de tiempo |
+| **Solicitante** | Equipo de desarrollo (Naranja's Team) |
+| **Documentos afectados** | SRS §3.4.2 (OTP para el Modo Autónomo), RF-402, RF-503, RNF-001 (login en 2 toques), RNF-005 (aislamiento); SDD §3.1.1 (`trader_users`, `totp_secret`), §4.3 (transición de modos con OTP); CR-004 (superficie de la API) |
+| **Tipo** | Alcance aceptado / brecha declarada |
+| **Prioridad** | Alta (seguridad), pero **postergada** por el recorte |
+| **Estado** | Implementado lo mínimo; **brechas declaradas, no cerradas** |
+
+### Contexto
+
+El plan original del Sprint 4 incluía **S4.2: login mínimo y roles**
+(`trader_users` con bcrypt, tres roles, sesiones en BD con cookie
+`httpOnly` + `SameSite=Strict`, protección CSRF, script de creación de
+usuarios y límite de intentos de login). El alcance se recortó por falta de
+tiempo y S4.2 **se eliminó**.
+
+Lo que sí se conservó es la única decisión de autorización que el
+Kill-Switch necesita: **disparar no pide nada, reiniciar sí**.
+
+### Cambio aprobado (implementado en C3)
+
+**Clave de reinicio del Kill-Switch**, en lugar de usuarios y sesiones:
+
+- **Hash en el entorno**, nunca la clave en claro y nunca en el repositorio:
+  `KILL_SWITCH_RESET_KEY_HASH` con formato
+  `pbkdf2-sha256$<iteraciones>$<sal>$<hash>`, todo generado con la
+  **stdlib** (`python -m src.security.clave_reinicio`, que lee la clave dos
+  veces sin eco y nunca por argumento de línea de comandos).
+- **Comparación en tiempo constante** con `hmac.compare_digest`. Un hash mal
+  formado **cierra** el acceso (devuelve `False` y loguea), nunca lo abre.
+- **Límite de intentos** (`KILL_SWITCH_MAX_ATTEMPTS`, 5 por defecto) dentro
+  de una ventana (`KILL_SWITCH_VENTANA_INTENTOS_S`, 900 s), **persistido en
+  `kill_switch_state`**: sobrevive a un reinicio del proceso y se limpia al
+  reiniciar con éxito o al caducar la ventana.
+- **Actor `CLAVE_REINICIO`** en `audit_logs`: sin identidad personal, porque
+  no existe autenticación de usuarios. La IP del equipo acompaña siempre.
+- **Disparar sigue sin clave** (RF-501): en una emergencia no se pide
+  credencial a quien intenta parar el sistema.
+
+**Sin CSRF:** la protección CSRF protege credenciales ambientales (cookies).
+Al no haber sesión ni cookie, no hay nada ambiental que explotar: la clave
+viaja en la cabecera `X-Kill-Switch-Key`, que es un secreto de la petición,
+no una credencial automática del navegador.
+
+**Sin TOTP ni roles:** el cambio a Modo Autónomo sigue exigiendo en el SRS
+la autorización de la Gerencia + OTP (§3.4.2, RF-402); en esta fase **no
+existe endpoint de cambio de modo**: `is_autonomous` solo se toca en la
+configuración, y el flujo completo se prueba con predicciones y modo
+inyectados en los tests de integración (`tests/test_flujo_ordenes.py`),
+etiquetados como verificación de pipeline y no de rendimiento del modelo.
+
+### Brechas declaradas (no cerradas)
+
+| Requisito | Estado | Mitigación actual |
+|---|---|---|
+| **RF-503** — reinicio por «Administrador de TI o Gerente» | **Incumplido en identidad**: cualquiera con la clave reinicia; no hay forma de saber *quién*. | Actor `CLAVE_REINICIO` + IP en la auditoría, límite de intentos, clave de fuente alta entropía. |
+| **RNF-001** — «Iniciar Sesión» en 2 toques | **No implementado** (S4.2 eliminado). | Ninguna: la UI no tiene sesión. |
+| **RNF-005** — aislamiento / accesos no autorizados | **Parcial**: no hay autorización por rol; las rutas GET siguen abiertas (CR-004 se mantiene en lo esencial). | API en `127.0.0.1` por defecto, sin secretos en respuestas, solo-loopback en Docker. |
+| **SRS §3.4.2 / RF-402** — OTP para Modo Autónomo | **No implementado**. | El modo no se puede cambiar por API. |
+| **SRS §4.3 (SDD)** — transición de modos con OTP | **No implementado**. | Ídem. |
+| TLS en la intranet | **No implementado**. | Red física de la oficina (REST-05); queda como trabajo futuro. |
+
+### Dependencias
+
+**Ninguna nueva.** El recorte de S4.2 dejó `bcrypt` sin uso: la clave de
+reinicio usa PBKDF2 de la biblioteca estándar, y no se añadió ningún
+paquete a `pyproject.toml` en todo el Sprint 4.
+
+### Cierre previsto
+
+Junto con el Ítem 12 (IB real) o en el siguiente sprint, según decida la
+Gerencia: `trader_users` + sesiones + TOTP, rol de mínimo privilegio en
+PostgreSQL (deuda D4 de CR-004) y TLS. Hasta entonces, cualquier revisión
+de seguridad debe leer **esta** CR antes que el código.

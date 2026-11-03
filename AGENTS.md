@@ -6,7 +6,7 @@ Contexto persistente para cualquier agente de codificación (OpenCode, Claude Co
 - `docs/srs.md` — Software Requirements Specification completo (todos los RF-XXX, RNF-XXX, REST-XXX con su texto exacto)
 - `docs/sdd.md` — Software Design Description completo (esquema físico de BD, UML, clases detalladas)
 - `docs/backlog.md` — Product Backlog y planificación de sprints
-- `docs/change-requests.md` — Registro de cambios formales a SRS/SDD (CR-001: campos `price_high`/`price_low`; CR-002: proveedor de datos Alpha Vantage → Twelve Data, RF-102 parcialmente cubierto; **CR-003: inmutabilidad del histórico en InfluxDB, resuelta con guarda insert-if-absent en la capa de aplicación**)
+- `docs/change-requests.md` — Registro de cambios formales a SRS/SDD (CR-001: campos `price_high`/`price_low`; CR-002: proveedor de datos Alpha Vantage → Twelve Data, RF-102 parcialmente cubierto; **CR-003: inmutabilidad del histórico en InfluxDB, resuelta con guarda insert-if-absent en la capa de aplicación**; CR-004: API de M2 SOLO GET sin sesión; **CR-005: Kill-Switch del Sprint 4 — `kill_switch_state`, columna `actor`, inmutabilidad de `audit_logs` a nivel de BD y broker simulado**; **CR-006: autenticación mínima — sin usuarios ni roles, reinicio con clave, brechas RF-503/RNF-001/RNF-005 declaradas**)
 
 Cuando una tarea requiera el texto exacto de un requisito, una firma de clase completa, o cualquier detalle no cubierto abajo, **lee el archivo fuente correspondiente en `docs/` antes de asumir nada.** Este resumen puede quedar desactualizado si el SRS/SDD se revisan; los archivos en `docs/` son la fuente de verdad.
 
@@ -49,9 +49,10 @@ Flujo: `Twelve Data API (QQQ) → IngestionEngine (M2) → InfluxDB (M2) → Loc
 - **Frontend:** React + Vite + Tailwind CSS + shadcn/ui, TypeScript estricto, Zod + React Hook Form para validación. Gráficos interactivos con **Recharts** — este ítem proviene del **backlog Ítem 8** (RF-05), no del SRS: §5.1 solo fija React, Vite, Tailwind CSS y shadcn/ui.
 - **IA:** PyTorch con NVIDIA CUDA v12+.
 - **Bases de datos:** PostgreSQL 16 (relacional/auditoría), InfluxDB 2.7 (series temporales, lenguaje Flux).
-- **Broker:** Interactive Brokers Gateway (TWS API) vía TCP local, cuenta Sandbox en desarrollo/Sprint 4.
+- **Broker:** Interactive Brokers Gateway (TWS API) vía TCP local, cuenta Sandbox en desarrollo. **El Ítem 12 sigue pendiente**: mientras tanto corre `SimulatedBrokerGateway` (Modo Sombra, todo `is_simulated = true`) — ver CR-005.
 - **Datos de mercado:** Twelve Data API (HTTP asíncrono), símbolo `QQQ` como proxy del NASDAQ-100, tras CR-002. Interfaz `MarketDataProvider` intercambiable. *(El SRS y el SDD v1.0 aún nombran Alpha Vantage: cambio pendiente de aprobación formal — ver CR-002.)*
 - **Notificaciones:** módem GSM por USB serie o SMTP/SMS local; correo vía SMTP local.
+- **Dependencias nuevas en el Sprint 4: NINGUNA.** La clave de reinicio usa PBKDF2 de la biblioteca estándar (CR-006 descartó `bcrypt` con el recorte del login).
 
 ## 5. Convenciones de código obligatorias
 
@@ -116,7 +117,8 @@ Flujo: `Twelve Data API (QQQ) → IngestionEngine (M2) → InfluxDB (M2) → Loc
 - `system_configurations`: `id UUID [PK]`, `max_loss_day DECIMAL(5,2) DEFAULT 1.25`, `is_autonomous BOOLEAN DEFAULT FALSE`, `risk_profile VARCHAR(20) DEFAULT 'CONVENTIONAL'`.
 - `ai_predictions`: `id UUID [PK]`, `prediction_time BIGINT` (epoch ms), `trend_prediction VARCHAR(10)` (`UP`|`DOWN`|`STABLE`), `confidence_score DECIMAL(5,4)`, `technical_rationale TEXT`.
 - `transactions`: `id UUID [PK]`, `prediction_id UUID [FK -> ai_predictions.id, NULLABLE]`, `broker_order_id VARCHAR(100)`, `transaction_type VARCHAR(10)` (`BUY`|`SELL`), `quantity DECIMAL(12,4)`, `execution_price DECIMAL(12,4)`, `execution_time BIGINT`, `is_simulated BOOLEAN DEFAULT TRUE`.
-- `audit_logs`: `id UUID [PK]`, `timestamp BIGINT`, `user_id UUID [FK -> trader_users.id, NULLABLE]`, `action VARCHAR(100)` (ej. `KILL_SWITCH_TRIGGERED`, `MODE_AUTONOMOUS_ENABLED`), `ip_address VARCHAR(45)`, `payload TEXT` (JSON).
+- `audit_logs`: `id UUID [PK]`, `timestamp BIGINT`, `user_id UUID [FK -> trader_users.id, NULLABLE]`, `action VARCHAR(100)` (ej. `KILL_SWITCH_TRIGGERED`, `KILL_SWITCH_RESET`), **`actor VARCHAR(50) NOT NULL`** (`SISTEMA`|`OPERADOR`|`CLAVE_REINICIO`, sin default — CR-005), `ip_address VARCHAR(45)`, `payload TEXT` (JSON). **Inmutable a nivel de base de datos**: triggers de fila (UPDATE/DELETE) y de sentencia (TRUNCATE) con `ENABLE ALWAYS`, más `REVOKE` de los privilegios de modificación (RF-701).
+- `kill_switch_state`: `id UUID [PK]` (singleton), `activo BOOLEAN`, `motivo VARCHAR(200)`, `origen VARCHAR(20)` (`MANUAL`|`AUTOMATICO`), `actor VARCHAR(20)` (`SISTEMA`|`OPERADOR`), `disparado_en BIGINT`, `liquidacion_estado VARCHAR(20)` (`NINGUNA`|`PENDIENTE`|`EN_CURSO`|`COMPLETADA`|`FALLIDA`), `liquidacion_en BIGINT`, `liquidaciones INTEGER` (acumulado: la idempotencia se comprueba aquí), `reinicio_en BIGINT`, `sesion_reinicio DATE` (guarda anti-bucle del disparo automático), `intentos_reinicio INTEGER`, `ultimo_intento_en BIGINT` — CR-005.
 
 **InfluxDB** (series temporales, velas de 5 min, sin escrituras destructivas sobre histórico):
 
@@ -129,11 +131,14 @@ Flujo: `Twelve Data API (QQQ) → IngestionEngine (M2) → InfluxDB (M2) → Loc
 | `IngestionEngine` | `src/ingestion/engine.py` | Consume Twelve Data vía `MarketDataProvider` cada 5 min, valida payload, escribe en InfluxDB con guarda de inmutabilidad (CR-003) | RF-101, RF-102, RF-103 |
 | `AsymmetricCalculator` | `src/calculator/asymmetric.py` | Cálculo de rendimiento 2x / pérdida 1.25% / gaps | RF-201, RF-202, RF-203 |
 | `LocalPredictiveModel` | `src/ai/model.py` | Carga y corre el modelo PyTorch en GPU local, genera predicción + XAI + confianza | RF-301, RF-302, RF-303 |
-| `RiskManager` | `src/security/risk_manager.py` | Valida umbrales por perfil de riesgo, dispara el Kill-switch | RF-402, RF-403, RNF-010 |
-| `KillSwitchEngine` | `src/security/kill_switch.py` | Liquidación síncrona de posiciones | RF-501, RF-502, RF-503 |
-| `BrokerGateway` | `src/integration/broker.py` | Comunicación TCP con IB Gateway (real y Sandbox) | RF-402, RF-601 |
-| `ExportUtility` | `src/utils/export.py` | Reportes PDF/CSV locales | RF-702 |
-| Dashboard | `src/pages/Dashboard.tsx` | UI: selector de modo, Kill-switch, velas 5M | RF-401, RF-501 |
+| `RiskManager` | `src/security/risk_manager.py` | Puerta de órdenes: bloqueo ANTES que cualquier cálculo, luego la señal única, luego el modo (Asesor alerta / Autónomo ordena) | RF-401, RF-402, RF-403, RNF-010 |
+| `KillSwitchEngine` | `src/security/kill_switch.py` | Bandera en memoria → compare-and-set → liquidación → auditoría; estado persistido, disparo automático y reinicio con clave | RF-501, RF-502, RF-503, RNF-010 |
+| `BrokerGateway` | `src/integration/broker.py` | Interfaz del broker + `SimulatedBrokerGateway` (Modo Sombra, `is_simulated = true`); el TCP real es el Ítem 12 | RF-402, RF-601, RF-602 |
+| `Auditoria` | `src/security/auditoria.py` | Inserto síncrono en `audit_logs` con actor e IP; `auditar_sincrono()` propaga el fallo (regla 3) | RF-701 |
+| Auditoría pendiente | `src/security/auditoria_pendiente.py` | Cola JSONL `logs/auditoria-pendiente.jsonl` cuando la BD no está, con volcado y reparación del bloqueo | RF-701, RF-503 |
+| API del Kill-Switch | `src/endpoints/kill_switch.py` | `GET/POST /api/kill-switch` (sin clave) y `POST …/reset` (con clave) | RF-501, RF-503 |
+| `ExportUtility` | `src/utils/export.py` | Reportes PDF/CSV locales (**pendiente, Ítem 13**) | RF-702 |
+| Dashboard | `frontend/src/App.tsx` + `components/` | UI: cabecera con control del Kill-Switch, selector de modo, velas 5M | RF-401, RF-501 |
 
 ## 13. Requisitos no funcionales clave (ISO/IEC 25010)
 
@@ -157,8 +162,17 @@ Flujo: `Twelve Data API (QQQ) → IngestionEngine (M2) → InfluxDB (M2) → Loc
   - Desarrollo y pruebas ocurren en **M2**; el código que correrá en M1 (IA, CUDA) y M3 (operador) se construye aquí y se despliega después. Ver sección 15.
   - Fase A (completada): features/dataset sin fuga de datos, `LocalPredictiveModel` (MLP pequeño), XAI por gradiente×entrada, ratio de confianza, reentrenamiento diario por CLI, tabla `ai_predictions`, y el límite M2→M1 (`train` + `serve` en FastAPI, con `GET /modelo`).
   - Fase B1 (completada): **API de solo lectura de M2** (`src/endpoints/`, SOLO GET, sin autenticación por alcance — CR-004), ciclo `scheduler → inferencia M1 → ai_predictions` idempotente (D2), backend de M2 en Docker (`Dockerfile.backend` + servicios `api`/`scheduler` en red host, ver `docs/despliegue.md` §11) y benchmark RNF-003 (`scripts/bench_rnf003.py`: **p95 117 ms en el servidor local**, 4 de sus 5 componentes; la UI se mide al cierre de B2). 635 tests en verde.
-  - Fase B2 (después): dashboard React (impeccable + minimalist-ui) y cierre de RNF-003 midiendo la actualización de la interfaz. Kill-switch e IB quedan para el Sprint 4.
-- **Sprint 4:** Kill-switch, auditoría 5 años, notificaciones SMS/SMTP, integración TCP con IB, reportes.
+  - Fase B2 (completada): dashboard React (impeccable + minimalist-ui), medición de RNF-003 por componentes y cierre de RNF-004. Ver `docs/informe-b2-sprint3.md`. RNF-003 quedó **SIN CUMPLE completo** por falta de la observación end-to-end con vela real.
+- **Sprint 4 (mínimo) — COMPLETADO (03/11/2026), un commit por bloque.** Ítem 9 completo, Ítem 10 completo, Ítem 12 solo en su parte simulada. Detalle en `docs/informe-sprint4.md`.
+  - **C1 `cfbb492` — Auditoría inmutable (RF-701):** columna `actor` (migración idempotente en bloque `DO` ANTES de los triggers, porque el backfill es un `UPDATE`), trigger de fila para UPDATE/DELETE, trigger de **sentencia** para TRUNCATE (los de fila no se disparan ante un `TRUNCATE`), ambos en `ENABLE ALWAYS`, `REVOKE` de los privilegios de modificación, y `src/security/auditoria.py` con la regla estricta. **Verificado contra PostgreSQL real**: rechazos con INSERT de control en la misma transacción (psql sale con `ON_ERROR_STOP` y la transacción se revuelve sola), `tgenabled='A'` del catálogo y `REVOKE` probado con un rol no superusuario.
+  - **C2 `7c90e29` — Estado y motor:** tabla `kill_switch_state`, `src/integration/broker.py` (`BrokerGateway` + `SimulatedBrokerGateway`) y `KillSwitchEngine` con el orden aprobado **bandera en memoria → compare-and-set → liquidación → auditoría**. La regla 3 estricta **no** aplica a este camino; sí al resto. Si la BD no está, el evento va a `logs/auditoria-pendiente.jsonl` y ese archivo además **repara** un bloqueo no persistido.
+  - **C3 `d8d4fd6` — API y clave:** `GET/POST /api/kill-switch` (**sin clave**, RF-501) y `POST …/reset` con clave de reinicio (PBKDF2 en el entorno, `compare_digest`, límite de intentos persistido, actor `CLAVE_REINICIO`); `/api/status` con el estado **`ROJO`** (que manda incluso sobre «Mercado cerrado») y señal **no operable**; `RiskManager.decidir()`.
+  - **C4 `e896b1b` — Disparo automático:** umbral −1,25 % en cada tick contra la apertura de la sesión (`features.apertura_de_sesion()`, la MISMA que usa `/api/yield`), actor `SISTEMA`, guarda anti-bucle por fecha de sesión, pérdida real en el payload si es gap (RF-203), RNF-010 medido y `tests/test_flujo_ordenes.py` con predicciones **inyectadas** (verificación de pipeline, no de rendimiento del modelo).
+  - **C5 `c773e21` — UI:** control en la cabecera a **2 toques**, chip `ROJO` con ícono propio y parpadeo lento apagado por `prefers-reduced-motion`, esquemas Zod y escenario `kill-switch-activo`.
+  - **C6 — cierre:** CR-005 y CR-006, `docs/runbook-broker.md` (RF-801), `docs/informe-sprint4.md`.
+  - **Recorte de alcance aprobado:** S4.2 (login y roles) **eliminado** → reinicio con clave de reinicio; S4.4 **reducido** a pruebas de integración. Brechas en CR-006: sin usuarios/roles/TOTP/CSRF, sin TLS, reinicio sin identidad personal (RF-503), rutas GET abiertas.
+  - **Cifras:** 876 pruebas Python + 47 de frontend en verde; RNF-010 p95 2,56 ms (pulsación→respuesta), 0,004 ms (bloqueo con CAS real), 0,005 ms (liquidación).
+  - **Pendiente del Sprint 4:** Ítem 11 (notificaciones SMS/SMTP), Ítem 12 real (IB por TCP), Ítem 13 (reportes PDF/CSV), TLS, TOTP, RF-204 y la verificación física en M1.
 
 ## 15. Modelo de desarrollo y despliegue
 

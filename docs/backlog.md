@@ -68,6 +68,13 @@ El desarrollo del sistema para RiTech SAS se distribuye de manera balanceada en 
 
 #### SPRINT 4: Seguridad Operativa, Integración con Broker y Cierre
 *   **Objetivo:** Implementar los mecanismos de protección de capital (Kill-Switch), auditoría inmutable, notificaciones locales e integración real en cuenta Sandbox con Interactive Brokers para habilitar el Modo Sombra.
+*   **Estado de cierre (03/11/2026) — alcance mínimo aprobado, 6 commits:**
+    *   *Ítem 9:* **COMPLETADO** (Kill-Switch con estado persistido, disparo automático al −1,25 %, SimulatedBrokerGateway y demostración por pruebas de integración con predicciones inyectadas — se sustituyó el script de demostración y la base aparte por `tests/test_flujo_ordenes.py`).
+    *   *Ítem 10:* **COMPLETADO** (auditoría inmutable a nivel de PostgreSQL, verificada contra el motor real).
+    *   *Ítem 11:* **NO EMPEZADO** (notificaciones SMS/SMTP) — trabajo futuro.
+    *   *Ítem 12:* **PARCIAL** (solo la parte simulada: `SimulatedBrokerGateway`; el TCP real con IB sigue pendiente).
+    *   *Ítem 13:* **NO EMPEZADO** (reportes PDF/CSV) — trabajo futuro.
+    *   *Alcance recortado:* S4.2 (login y roles) eliminado → reinicio con clave de reinicio; detalle y brechas en `docs/change-requests.md` CR-005 y CR-006; verificación en `docs/informe-sprint4.md`.
 *   **Ítem 9: Módulo de Gestión de Riesgos y Kill-Switch Maestro (Javier Martínez)**
     *   *Descripción:* Desarrollo de la lógica de contención que corta asíncronamente el trading autónomo de la IA y envía peticiones síncronas bloqueantes al broker para cerrar posiciones.
     *   *Restricción de negocio (Sprint 3, informe §10.3):* El `RiskManager` **solo abre posición con `UP`/`DOWN`; `STABLE` nunca abre, con cualquier confianza.** En el entrenamiento del Sprint 3 el 100 % de las predicciones por encima de 0,65 fueron `STABLE` y ninguna `UP`/`DOWN` alcanzó siquiera el umbral más bajo, así que con el modelo actual el sistema no abriría posición alguna. **Esa abstención es el comportamiento correcto y no es un defecto que haya que corregir**: es lo que RF-304 existe para producir ante una señal que no se puede defender.

@@ -130,7 +130,7 @@ Hay una plantilla por máquina, y **no son intercambiables**:
 | Archivo | Máquina | Contiene |
 |---|---|---|
 | `.env.m1.example` | M1 | `MODEL_PATH`, `INFERENCE_*`, `MODEL_ARCH`, InfluxDB de **solo lectura** |
-| `.env.m2.example` | M2 | Twelve Data, PostgreSQL, InfluxDB, IB, `INFERENCE_URL` |
+| `.env.m2.example` | M2 | Twelve Data, PostgreSQL, InfluxDB, IB, `INFERENCE_URL`, Kill-Switch (`KILL_SWITCH_RESET_KEY_HASH`, límite de intentos, archivo de auditoría pendiente) |
 | `.env.m3.example` | M3 | prácticamente nada (es deliberado) |
 
 Instalación:
@@ -492,27 +492,43 @@ roles, escrituras y Kill-Switch llegan en el Sprint 4.
 3. Comprobar con `scripts/sesion.sh estado`: inferencia «corriendo», API
    «salud: OK», última vela y última predicción — y ahí mismo aparecen los
    errores recientes de los logs si los hubiera.
-4. A partir de las 08:30 hora Colombia (09:30 ET) llegan velas nuevas cada
-   5 min y, con ellas, ventana y predicción; la recuperación de huecos corre
-   sola en cada tick (cuota 8/min y 800/día, insert-if-absent, sin duplicar).
+4. A partir de la **apertura de sesión** llegan velas nuevas cada 5 min y,
+   con ellas, ventana y predicción; la recuperación de huecos corre sola en
+   cada tick (cuota 8/min y 800/día, insert-if-absent, sin duplicar).
 5. Vigilar los primeros minutos con `docker compose logs -f scheduler`; si
-   todo va bien, no hay más pasos: el stack queda solo hasta el cierre
-   (15:00 hora Colombia) — el arranque en frío completo está verificado
-   (`docker compose down` + `scripts/sesion.sh start`).
+   todo va bien, no hay más pasos: el stack queda solo hasta el cierre de
+   sesión — el arranque en frío completo está verificado (`docker compose
+   down` + `scripts/sesion.sh start`).
+
+> **Horas de sesión: ninguna escrita a mano.** Apertura y cierre
+> (09:30–16:00 ET) los calcula **`src/utils/mercado.py`**
+> (`ventana_de_consulta`, `apertura_ms`, `ahora_ny`), que resuelve el cambio
+> de horario de verano. Por eso en este documento no hay una hora fija de
+> Colombia para la sesión: entre el 01/11/2026 y marzo ET coincide con la
+> hora de Colombia, y en verano va una hora por delante. La regla de
+> **no reconstruir el stack de la sesión** se expresa en esa misma ventana
+> calculada, no en un reloj de Bogotá.
 
 ---
 
-## 12. Qué queda fuera (Fase B2 y Sprint 4)
+## 12. Qué queda fuera
+
+**Ya está** (Sprint 4, commits C1–C5): el dashboard de la Fase B2
+(servicio `web`, §11), la auditoría inmutable a nivel de PostgreSQL, el
+estado persistido del Kill-Switch, sus tres rutas en el API y el control en
+la cabecera del panel. Cómo se verificó: `docs/informe-sprint4.md`.
 
 No forma parte de este despliegue:
 
-- El dashboard de la Fase B2 y su integración con la UI (la API que consume
-  ya existe, en §11).
-- El Kill-switch, la auditoría, las notificaciones y la integración con
-  Interactive Brokers.
-- **RF-801**: el runbook de mitigación de fallos de IB para el operador.
-  Es el documento que este manual **no** es; ver el encabezado.
+- **Ítem 11**: notificaciones SMS/SMTP (módem GSM por serie o SMTP local).
+- **Ítem 12**: integración real con Interactive Brokers por TCP. Mientras
+  tanto corre `SimulatedBrokerGateway`, que registra todo como
+  `is_simulated = true` (RF-601/602).
+- **Ítem 13**: reportes financieros PDF/CSV (RF-702).
+- Autenticación de usuarios, roles y TOTP — **brecha declarada en CR-006**;
+  el reinicio del Kill-Switch va con clave de reinicio.
 - TLS para InfluxDB en la intranet (§5).
+- **RF-801**: runbook de mitigación de fallos de IB → `docs/runbook-broker.md`.
 
 ---
 
