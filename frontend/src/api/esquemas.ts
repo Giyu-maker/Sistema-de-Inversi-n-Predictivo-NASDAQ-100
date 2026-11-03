@@ -106,8 +106,49 @@ export const esquemaPerfil = z.object({
   por_defecto: z.boolean(),
 })
 
+// -- /api/kill-switch ---------------------------------------------------------
+
+/**
+ * Estado del bloqueo. `activo` puede ser `null`: **no verificado** no es lo
+ * mismo que **desactivado**, y la interfaz no debe pintarlos igual.
+ *
+ * `detalle` lo redacta el backend (`KillSwitchEngine.resumen`): la UI solo
+ * lo pinta, nunca compone texto de emergencia.
+ */
+export const esquemaKillSwitch = z.object({
+  activo: z.boolean().nullable(),
+  detalle: z.string(),
+  motivo: z.string().nullable(),
+  origen: z.string().nullable(),
+  liquidacion_estado: z.string(),
+  liquidaciones: z.number().int(),
+  disparado_en: z.number().int().nullable(),
+  reinicio_en: z.number().int().nullable(),
+})
+
+/** Respuesta de `POST /api/kill-switch`: estado + métricas del disparo. */
+export const esquemaDisparo = esquemaKillSwitch.extend({
+  primera_vez: z.boolean(),
+  ms_bloqueo: z.number(),
+  ms_liquidacion: z.number(),
+  ordenes_simuladas: z.number().int(),
+  persistencia_ok: z.boolean(),
+  auditoria_ok: z.boolean(),
+})
+
+/** Respuesta de `POST /api/kill-switch/reset`. */
+export const esquemaReinicio = z.object({
+  reiniciado: z.boolean(),
+  detalle: z.string(),
+  intentos_reinicio: z.number().int(),
+})
+
+export type KillSwitch = z.infer<typeof esquemaKillSwitch>
+export type Disparo = z.infer<typeof esquemaDisparo>
+export type Reinicio = z.infer<typeof esquemaReinicio>
+
 export const esquemaEstadoSistema = z.object({
-  estado: z.string(), // VERDE | AMARILLO | CERRADO
+  estado: z.string(), // VERDE | AMARILLO | CERRADO | ROJO (Kill-Switch, RF-501)
   motivo: z.string(),
   mercado: esquemaMercado,
   ultima_vela: esquemaVelaResumen.nullable(),
@@ -117,6 +158,7 @@ export const esquemaEstadoSistema = z.object({
   perfil: esquemaPerfil,
   ultima_prediccion: esquemaPrediccion.nullable(),
   senal: esquemaSenal.nullable(),
+  kill_switch: esquemaKillSwitch,
   avisos: z.array(z.string()),
 })
 

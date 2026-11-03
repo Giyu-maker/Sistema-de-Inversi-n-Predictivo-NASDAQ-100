@@ -23,6 +23,7 @@ import {
   Clock,
   Info,
   Moon,
+  Prohibit,
   Sun,
   TrendUp,
   Warning,
@@ -30,6 +31,7 @@ import {
 
 import type { Fase } from '../api/cliente.ts'
 import type { EstadoSistema } from '../api/esquemas.ts'
+import { ControlKillSwitch } from './control-kill-switch.tsx'
 import { formatearHoraET, posicionSesion } from '../lib/formato.ts'
 import { alternarTema, temaActual } from '../lib/tema.ts'
 import type { Tema } from '../lib/tema.ts'
@@ -51,6 +53,9 @@ const ETIQUETAS: Record<string, EtiquetaEstado> = {
   VERDE: { texto: 'Sistema normal', clase: 'bg-verde-fondo text-verde-texto' },
   AMARILLO: { texto: 'Atención', clase: 'bg-ambar-fondo text-ambar-texto' },
   CERRADO: { texto: 'Mercado cerrado', clase: 'bg-muted text-muted-foreground' },
+  // RF-501: el rojo es EXCLUSIVO del Kill-Switch (SRS §10.3). Texto + icono,
+  // y con parpadeo lento — `prefers-reduced-motion` lo apaga.
+  ROJO: { texto: 'Kill-Switch activo', clase: 'bg-rojo-fondo text-rojo-texto' },
 }
 
 const ETIQUETA_DESCONOCIDA: EtiquetaEstado = {
@@ -67,6 +72,8 @@ function antiguedadEnPalabras(segundos: number): string {
 
 function iconoDeEstado(codigo: string, clase: string, motivo?: string): React.ReactElement {
   if (codigo === 'VERDE') return <CheckCircle weight="bold" className={clase} />
+  // RF-501: el rojo lleva su propio ícono para que no dependa del color.
+  if (codigo === 'ROJO') return <Prohibit weight="bold" className={clase} />
   if (codigo === 'AMARILLO') {
     // P1.7: los dos ámbares se distinguen por texto E ícono — «Mercado
     // inestable» (movimiento esperado) frente a «Revisar el sistema».
@@ -83,9 +90,11 @@ export interface PropsCabecera {
   estado: EstadoSistema | null
   fase: Fase
   mensaje: string | null
+  /** Refresca `/api/status` tras un disparo o un reinicio. */
+  refrescar: () => void
 }
 
-export function Cabecera({ estado, fase, mensaje }: PropsCabecera) {
+export function Cabecera({ estado, fase, mensaje, refrescar }: PropsCabecera) {
   const [tema, setTema] = useState<Tema>(temaActual)
   // El reloj vive en estado (no en el render) y late cada minuto: la
   // posición en la franja avanza sin repintar por cada fotograma.
@@ -124,7 +133,13 @@ export function Cabecera({ estado, fase, mensaje }: PropsCabecera) {
             ) : (
               <>
                 <span
-                  className={`inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 text-sm font-medium ${etiqueta.clase}`}
+                  className={`inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 text-sm font-medium ${etiqueta.clase}${
+                    // Parpadeo lento SOLO en emergencia, y apagado por
+                    // `prefers-reduced-motion` (SRS §10.3 + brief de motion).
+                    estado.estado === 'ROJO'
+                      ? ' parpadeo-lento motion-reduce:animate-none'
+                      : ''
+                  }`}
                 >
                   {iconoDeEstado(estado.estado, 'h-4 w-4', estado.motivo)}
                   {etiqueta.texto}
@@ -150,6 +165,12 @@ export function Cabecera({ estado, fase, mensaje }: PropsCabecera) {
                 </>
               )}
             </p>
+            {/* RF-501: el botón de emergencia vive en la cabecera, siempre
+                visible y a un toque del panel (RNF-001). */}
+            <ControlKillSwitch
+              killSwitch={estado?.kill_switch ?? null}
+              refrescar={refrescar}
+            />
             <button
               type="button"
               onClick={() => setTema(alternarTema())}

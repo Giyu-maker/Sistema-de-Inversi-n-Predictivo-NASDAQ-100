@@ -170,6 +170,21 @@
     }
 }
 
+/* Kill-Switch activo (RF-501): parpadeo LENTO del estado de emergencia.
+   Lento y con opacidad suave a propósito: el operador tiene que LEER el
+   texto y el icono, no solo ver algo parpadear. La regla global de
+   `prefers-reduced-motion` de abajo lo apaga, y `.motion-reduce:animate-none`
+   se aplica igual desde Tailwind para no depender de esa cascada. */
+@keyframes parpadeo-lento {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
 @layer components {
   /* Números-tesis (confianza, rendimiento): serif con cifras tabulares y
      lining — al actualizarse por polling no bailan de ancho. */
@@ -182,6 +197,9 @@
   .dato {
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
+  }
+  .parpadeo-lento {
+    animation: parpadeo-lento 2.4s ease-in-out infinite;
   }
 }
 

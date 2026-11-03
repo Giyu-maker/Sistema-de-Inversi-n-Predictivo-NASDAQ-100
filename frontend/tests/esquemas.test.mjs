@@ -10,7 +10,10 @@ import assert from 'node:assert/strict'
 import { MENSAJE_CONTRATO, validar } from '../src/api/cliente.ts'
 import {
   esquemaCalidadModelo,
+  esquemaDisparo,
   esquemaEstadoSistema,
+  esquemaKillSwitch,
+  esquemaReinicio,
   esquemaPrediccionPagina,
   esquemaPrediccionUltima,
   esquemaRendimiento,
@@ -63,6 +66,17 @@ const ESTADO_REAL = {
     perfil: 'MODERATE',
     tendencia: 'UP',
     confianza: 0.2789,
+  },
+  // Sprint 4 (CR-004 → CR-006): el API añade el estado del Kill-Switch.
+  kill_switch: {
+    activo: false,
+    detalle: 'Sin bloqueo: el Kill-Switch está desactivado.',
+    motivo: 'Sin disparo',
+    origen: 'MANUAL',
+    liquidacion_estado: 'NINGUNA',
+    liquidaciones: 0,
+    disparado_en: null,
+    reinicio_en: null,
   },
   avisos: [],
 }
@@ -255,4 +269,90 @@ test('esEscenario distingue los nombres válidos', () => {
 
 test('una ruta fuera del escenario no se responde: nunca se mezcla con la red', () => {
   assert.equal(servirEscenario('senal-operable', '/api/lo-que-sea', Date.now()), undefined)
+})
+
+
+// -- Kill-Switch (Sprint 4, RF-501/502/503) ----------------------------------
+
+const KILL_SWITCH_REAL = {
+  activo: false,
+  detalle: 'Sin bloqueo: el Kill-Switch está desactivado.',
+  motivo: 'Sin disparo',
+  origen: 'MANUAL',
+  liquidacion_estado: 'NINGUNA',
+  liquidaciones: 0,
+  disparado_en: null,
+  reinicio_en: null,
+}
+
+const DISPARO_REAL = {
+  ...KILL_SWITCH_REAL,
+  activo: true,
+  detalle:
+    'Kill-Switch activo. Se liquidaron 1 posición(es) simulada(s); no se ' +
+    'emitirán órdenes ni sugerencias hasta un reinicio autorizado.',
+  primera_vez: true,
+  ms_bloqueo: 0.004,
+  ms_liquidacion: 0.009,
+  ordenes_simuladas: 1,
+  persistencia_ok: true,
+  auditoria_ok: true,
+}
+
+const REINICIO_REAL = {
+  reiniciado: true,
+  detalle:
+    'Reinicio registrado. El sistema vuelve a operar: se reanudarán las ' +
+    'señales y las órdenes simuladas según el modo vigente.',
+  intentos_reinicio: 0,
+}
+
+test('el estado del Kill-Switch pasa la validación', () => {
+  assert.equal(validar(KILL_SWITCH_REAL, esquemaKillSwitch).estado, 'ok')
+  // `activo: null` es «no verificado», y también es contrato válido.
+  assert.equal(
+    validar({ ...KILL_SWITCH_REAL, activo: null, motivo: null }, esquemaKillSwitch).estado,
+    'ok',
+  )
+  // Y activo de verdad, con su liquidación.
+  assert.equal(
+    validar({ ...DISPARO_REAL, activo: true }, esquemaKillSwitch).estado,
+    'ok',
+  )
+})
+
+test('sin `kill_switch` el estado NO pasa: el campo es obligatorio', () => {
+  const sinKillSwitch = { ...ESTADO_REAL }
+  delete sinKillSwitch.kill_switch
+  assert.equal(validar(sinKillSwitch, esquemaEstadoSistema).estado, 'error')
+})
+
+test('un activo que no sea booleano ni null rompe el contrato', () => {
+  const roto = { ...KILL_SWITCH_REAL, activo: 'true' }
+  assert.equal(validar(roto, esquemaKillSwitch).estado, 'error')
+})
+
+test('la respuesta del disparo exige sus métricas', () => {
+  assert.equal(validar(DISPARO_REAL, esquemaDisparo).estado, 'ok')
+  for (const campo of [
+    'primera_vez',
+    'ms_bloqueo',
+    'ms_liquidacion',
+    'ordenes_simuladas',
+    'persistencia_ok',
+    'auditoria_ok',
+  ]) {
+    const sinCampo = { ...DISPARO_REAL }
+    delete sinCampo[campo]
+    assert.equal(
+      validar(sinCampo, esquemaDisparo).estado,
+      'error',
+      `falta ${campo}`,
+    )
+  }
+})
+
+test('la respuesta del reinicio es la del backend', () => {
+  assert.equal(validar(REINICIO_REAL, esquemaReinicio).estado, 'ok')
+  assert.equal(validar({ reiniciado: false, detalle: 'x' }, esquemaReinicio).estado, 'error')
 })

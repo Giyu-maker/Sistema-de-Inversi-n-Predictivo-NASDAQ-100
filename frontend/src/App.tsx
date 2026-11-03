@@ -38,7 +38,7 @@ function CargandoGrafico() {
 
 export default function App() {
   const banner = bannerPruebas()
-  const { estado, fase, mensaje } = useEstado()
+  const { estado, fase, mensaje, refrescar } = useEstado()
   const llave = llaveDe(estado)
   const ciclo = useCiclo(llave)
   const historial = useHistorial(llave)
@@ -46,7 +46,7 @@ export default function App() {
   return (
     <div className="min-h-dvh bg-background text-foreground">
       {banner ? banner() : null}
-      <Cabecera estado={estado} fase={fase} mensaje={mensaje} />
+      <Cabecera estado={estado} fase={fase} mensaje={mensaje} refrescar={refrescar} />
       <main className="mx-auto max-w-5xl px-6 py-8">
         {estado === null ? (
           <p className="text-sm text-muted-foreground">

@@ -30,6 +30,7 @@
 import type {
   CalidadModelo,
   EstadoSistema,
+  KillSwitch,
   Prediccion,
   PrediccionPagina,
   PrediccionUltima,
@@ -60,6 +61,8 @@ export const ESCENARIOS = [
   'una-vela',
   'dato-desactualizado',
   'api-caida',
+  // Sprint 4: el estado de emergencia que solo existe tras un disparo.
+  'kill-switch-activo',
 ] as const
 
 export type NombreEscenario = (typeof ESCENARIOS)[number]
@@ -71,6 +74,21 @@ export function esEscenario(valor: unknown): valor is NombreEscenario {
 }
 
 // -- constantes: copy literal del backend ------------------------------------
+
+/**
+ * Estado del Kill-Switch «todo normal»: el copy es literal del backend
+ * (`KillSwitchEngine.resumen`), igual que el resto de textos de escenario.
+ */
+export const KILL_SWITCH_NORMAL: KillSwitch = {
+  activo: false,
+  detalle: 'Sin bloqueo: el Kill-Switch está desactivado.',
+  motivo: 'Sin disparo',
+  origen: 'MANUAL',
+  liquidacion_estado: 'NINGUNA',
+  liquidaciones: 0,
+  disparado_en: null,
+  reinicio_en: null,
+}
 
 const VELA_MS = 5 * 60 * 1000
 const HORIZONTE_VELAS = 3
@@ -146,7 +164,7 @@ function estadoDeSistema(
   ahora: number,
   ultimaVelaMs: number | null,
   inestable: boolean,
-): { estado: 'VERDE' | 'AMARILLO'; motivo: string } {
+): { estado: 'VERDE' | 'AMARILLO'; motivo: string; kill_switch: KillSwitch } {
   const partes: string[] = []
   if (inestable) partes.push(MOTIVO_INESTABLE)
   if (ultimaVelaMs !== null && (ahora - ultimaVelaMs) / 1000 > 600) {
@@ -155,8 +173,10 @@ function estadoDeSistema(
         `${Math.floor((ahora - ultimaVelaMs) / 60_000)} min de antigüedad, máximo 10 min)`,
     )
   }
-  if (partes.length === 0) return { estado: 'VERDE', motivo: MOTIVO_VERDE }
-  return { estado: 'AMARILLO', motivo: partes.join('. ') }
+  if (partes.length === 0) {
+    return { estado: 'VERDE', motivo: MOTIVO_VERDE, kill_switch: KILL_SWITCH_NORMAL }
+  }
+  return { estado: 'AMARILLO', motivo: partes.join('. '), kill_switch: KILL_SWITCH_NORMAL }
 }
 
 const MOTIVO_PENDIENTE =
@@ -698,6 +718,7 @@ function escenarioHistorialLargo(ahora: number): DatosEscenario {
       perfil: { nombre: PERFIL, umbral_confianza: UMBRAL, max_loss_day: 1.25, por_defecto: false },
       ultima_prediccion: ultimaPrediccion,
       senal,
+      kill_switch: KILL_SWITCH_NORMAL,
       avisos: [],
     },
     velas,
@@ -834,6 +855,7 @@ function escenarioSinVelas(ahora: number): DatosEscenario {
       perfil: { nombre: PERFIL, umbral_confianza: UMBRAL, max_loss_day: 1.25, por_defecto: true },
       ultima_prediccion: null,
       senal,
+      kill_switch: KILL_SWITCH_NORMAL,
       avisos: [AVISO_VENTANA],
     },
     velas: [],
@@ -915,6 +937,50 @@ function escenarioDatoDesactualizado(ahora: number): DatosEscenario {
   }
 }
 
+/** Copy literal del backend cuando el bloqueo está activo (RF-501). */
+function detalleKillSwitch(disparadoEn: number): string {
+  return (
+    `Kill-Switch ACTIVO desde ${formatearFecha(disparadoEn)}: ` +
+    'Pérdida de sesión de 1,42 % (límite 1,25 %). Liquidación completada ' +
+    '(1 registrada(s)). No se emitirán órdenes ni sugerencias hasta un ' +
+    'reinicio autorizado.'
+  )
+}
+
+/**
+ * Kill-Switch disparado por el umbral: el chip es ROJO, la señal deja de
+ * ser operable y el control ofrece el reinicio con clave. Es el único
+ * escenario que produce `estado: 'ROJO'` — el resto de la API no lo hace a
+ * demanda, y pintarlo sin disparo sería mentir.
+ */
+function escenarioKillSwitchActivo(ahora: number): DatosEscenario {
+  const base = escenarioSenalOperable(ahora)
+  const disparadoEn = Math.floor(ahora / VELA_MS) * VELA_MS
+  const detalle = detalleKillSwitch(disparadoEn)
+  const senal: Senal = { ...base.status.senal!, operable: false, motivo: detalle }
+
+  return {
+    ...base,
+    status: {
+      ...base.status,
+      estado: 'ROJO',
+      motivo: detalle,
+      senal,
+      kill_switch: {
+        activo: true,
+        detalle,
+        motivo: 'Pérdida de sesión de 1,42 % (límite 1,25 %).',
+        origen: 'AUTOMATICO',
+        liquidacion_estado: 'COMPLETADA',
+        liquidaciones: 1,
+        disparado_en: disparadoEn,
+        reinicio_en: null,
+      },
+      avisos: [],
+    },
+  }
+}
+
 const CONSTRUCTORES: Record<NombreEscenario, (ahora: number) => DatosEscenario> = {
   'senal-operable': escenarioSenalOperable,
   'historial-largo': escenarioHistorialLargo,
@@ -925,6 +991,7 @@ const CONSTRUCTORES: Record<NombreEscenario, (ahora: number) => DatosEscenario> 
   'dato-desactualizado': escenarioDatoDesactualizado,
   // Mismos datos que una sesión operable: la caída la provoca el resolutor.
   'api-caida': escenarioSenalOperable,
+  'kill-switch-activo': escenarioKillSwitchActivo,
 }
 
 // -- servidor simulado --------------------------------------------------------

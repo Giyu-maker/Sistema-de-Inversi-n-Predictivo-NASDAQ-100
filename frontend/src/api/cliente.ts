@@ -113,9 +113,21 @@ export async function obtener<T>(
     }
   }
 
+  // Errores y contratos se traducen igual que en GET (arriba).
+  return aRespuesta<T>(respuesta, esquema)
+}
+
+/**
+ * Respuesta HTTP → `Respuesta<T>`: el mensaje de error de la API si la hay
+ * (ya viene en español, `src/endpoints/errores.py`), o la validación del
+ * cuerpo. Compartida por GET y POST para que las dos rutas traduzcan un
+ * fallo exactamente igual.
+ */
+async function aRespuesta<T>(
+  respuesta: Response,
+  esquema: ZodType<T>,
+): Promise<Respuesta<T>> {
   if (!respuesta.ok) {
-    // Los errores de la API ya vienen en español (`src/endpoints/errores.py`):
-    // si trae `mensaje`, ese es el texto que ve el operador.
     const cuerpo: unknown = await respuesta.json().catch(() => null)
     const mensaje = (cuerpo as { mensaje?: unknown } | null)?.mensaje
     return {
@@ -131,4 +143,68 @@ export async function obtener<T>(
   const cuerpo: unknown = await respuesta.json().catch(() => null)
   // JSON inexistente o inválido → `validar` falla → estado de contrato.
   return validar(cuerpo, esquema)
+}
+
+export interface OpcionesEnvio {
+  /** Señal del llamador: se combina con el timeout. */
+  signal?: AbortSignal
+  /** Cuerpo JSON. Si no se envía, la petición va sin cuerpo. */
+  cuerpo?: unknown
+  /** Cabeceras extra (p. ej. la clave de reinicio del Kill-Switch). */
+  cabeceras?: Record<string, string>
+}
+
+/**
+ * POST tipado. Mismas garantías que `obtener`: timeout, sin excepción,
+ * validación con Zod y mensajes de error en español.
+ *
+ * **No simula escrituras en los escenarios de desarrollo** (`?pruebas=…`):
+ * esos escenarios replican cuerpos de lectura, y fingir un disparo del
+ * Kill-Switch sería engañar al que está probando la pantalla.
+ */
+export async function enviar<T>(
+  ruta: string,
+  esquema: ZodType<T>,
+  opciones: OpcionesEnvio = {},
+): Promise<Respuesta<T>> {
+  if (hayPruebas()) {
+    return {
+      estado: 'error',
+      tipo: 'servidor',
+      mensaje:
+        'Los escenarios de desarrollo no simulan escrituras: pruebe contra el servidor real.',
+    }
+  }
+  if (opciones.signal?.aborted) {
+    return { estado: 'cancelado' }
+  }
+
+  const timeout = AbortSignal.timeout(TIMEOUT_MS)
+  const senal = opciones.signal ? AbortSignal.any([opciones.signal, timeout]) : timeout
+
+  let respuesta: Response
+  try {
+    respuesta = await fetch(ruta, {
+      method: 'POST',
+      signal: senal,
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        ...(opciones.cabeceras ?? {}),
+      },
+      cache: 'no-store',
+      body: opciones.cuerpo === undefined ? undefined : JSON.stringify(opciones.cuerpo),
+    })
+  } catch {
+    if (opciones.signal?.aborted) {
+      return { estado: 'cancelado' }
+    }
+    return {
+      estado: 'error',
+      tipo: 'red',
+      mensaje: timeout.aborted ? 'El servidor no respondió a tiempo.' : MENSAJE_RED,
+    }
+  }
+
+  return aRespuesta<T>(respuesta, esquema)
 }
