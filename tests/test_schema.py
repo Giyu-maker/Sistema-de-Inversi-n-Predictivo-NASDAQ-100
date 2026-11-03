@@ -24,7 +24,8 @@ _lineas = [l for l in _sql.splitlines() if not l.strip().startswith("--")]
 SQL = "\n".join(_lineas)
 
 TABLAS = {
-    "trader_users", "system_configurations", "ai_predictions", "transactions", "audit_logs",
+    "trader_users", "system_configurations", "ai_predictions", "transactions",
+    "audit_logs", "kill_switch_state",
 }
 
 
@@ -278,6 +279,45 @@ class TestAplicacionViva:
         # Y la limpieza deja la base como estaba.
         limpieza = psql("DELETE FROM ai_predictions WHERE prediction_time = -1;")
         assert limpieza.returncode == 0
+
+
+class TestKillSwitchState:
+    """RF-501 — el estado del Kill-Switch tiene que poder sobrevivir a un reinicio."""
+
+    @staticmethod
+    def _bloque() -> str:
+        m = re.search(r"CREATE TABLE IF NOT EXISTS kill_switch_state\s*\((.*?)\n\);", SQL, re.S)
+        assert m, "no se encontró la definición de kill_switch_state"
+        return m.group(1)
+
+    def test_tiene_las_columnas_del_estado(self) -> None:
+        columnas = set(re.findall(r"^\s{4}(\w+)\s", self._bloque(), re.M)) - {"CONSTRAINT"}
+        assert columnas == {
+            "id", "activo", "motivo", "origen", "actor", "disparado_en",
+            "liquidacion_estado", "liquidacion_en", "liquidaciones",
+            "reinicio_en", "sesion_reinicio", "intentos_reinicio",
+            "ultimo_intento_en",
+        }
+
+    def test_los_estados_y_origenes_estan_restringidos(self) -> None:
+        bloque = self._bloque()
+        assert "CHECK (origen IN ('MANUAL', 'AUTOMATICO'))" in bloque
+        assert "CHECK (actor IN ('SISTEMA', 'OPERADOR'))" in bloque
+        assert "CHECK (liquidacion_estado IN" in bloque
+        for estado in ("NINGUNA", "PENDIENTE", "EN_CURSO", "COMPLETADA", "FALLIDA"):
+            assert estado in bloque
+
+    def test_el_esquema_no_siembra_la_fila(self) -> None:
+        # La siembra es de Python (`sembrar_si_vacio`), igual que con
+        # system_configurations: el DDL no fabrica datos.
+        assert "kill_switch_state" not in re.findall(r"INSERT\s+INTO\s+(\w+)", SQL, flags=re.I)
+
+    def test_no_hay_triggers_sobre_el_estado(self) -> None:
+        # La inmutabilidad es de `audit_logs`; aquí el estado DEBE cambiar
+        # (activar, liquidar, reiniciar), así que no lleva triggers.
+        assert "kill_switch_state" not in re.findall(
+            r"CREATE TRIGGER\s+\w+\s+BEFORE.*?ON\s+(\w+)", SQL, flags=re.I | re.S
+        )
 
 
 class TestAuditoriaInmutable:

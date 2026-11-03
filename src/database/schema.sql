@@ -212,6 +212,65 @@ COMMENT ON COLUMN audit_logs.actor IS 'Quién actuó: SISTEMA, OPERADOR o CLAVE_
 
 
 -- ---------------------------------------------------------------------------
+-- kill_switch_state — estado persistido del Kill-Switch (RF-501, CR-005)
+-- ---------------------------------------------------------------------------
+-- RF-501 pide un bloqueo que sobreviva a un reinicio del proceso: la bandera
+-- en memoria corta al instante, pero si el servicio se cae o se reinicia el
+-- estado tiene que seguir estando. Por eso el estado vive aquí y no solo en
+-- `src/security/kill_switch.py`.
+--
+-- Singleton por convención, igual que `system_configurations`: la fila la
+-- siembra Python (`sembrar_si_vacio`, al arrancar el API y el scheduler) y la
+-- lectura ordena `activo DESC` —si una carrera dejara dos filas, manda la que
+-- está activa, es decir, se falla cerrado—.
+--
+-- La idempotencia del disparo NO se busca aquí: sale de un compare-and-set
+-- (`UPDATE ... WHERE activo = FALSE RETURNING`) en la capa de aplicación.
+CREATE TABLE IF NOT EXISTS kill_switch_state (
+    id                 UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- FALSE = sistema operable. La bandera en memoria es la que corta antes;
+    -- esta columna es la verdad compartida entre procesos.
+    activo             BOOLEAN      NOT NULL DEFAULT FALSE,
+    motivo             VARCHAR(200) NOT NULL,
+    -- MANUAL = pulsado desde el panel; AUTOMATICO = disparado por el umbral
+    -- de pérdida de sesión (RF-202 / RF-503).
+    origen             VARCHAR(20)  NOT NULL,
+    -- Quién disparó la activación actual. El reinicio se audita aparte, con
+    -- actor CLAVE_REINICIO, en `audit_logs`.
+    actor              VARCHAR(50)  NOT NULL,
+    disparado_en       BIGINT       NOT NULL,
+    -- Recorrido de la liquidación: un proceso que muere a mitad deja
+    -- PENDIENTE/EN_CURSO visible en el panel en lugar de un bloqueo mudo.
+    liquidacion_estado VARCHAR(20)  NOT NULL DEFAULT 'NINGUNA',
+    liquidacion_en     BIGINT,
+    -- Acumulado entre activaciones: es lo que permite probar que pulsar dos
+    -- veces no liquidó dos veces.
+    liquidaciones      INTEGER      NOT NULL DEFAULT 0,
+    reinicio_en        BIGINT,
+    -- Fecha ET del último reinicio: tras reiniciar, el disparo automático no
+    -- se vuelve a evaluar hasta la siguiente sesión (evita bucles).
+    sesion_reinicio    DATE,
+    -- Límite de intentos de la clave de reinicio (CR-006), con su ventana.
+    intentos_reinicio  INTEGER      NOT NULL DEFAULT 0,
+    ultimo_intento_en  BIGINT       NOT NULL DEFAULT 0,
+    CONSTRAINT kill_switch_origen_valido
+        CHECK (origen IN ('MANUAL', 'AUTOMATICO')),
+    CONSTRAINT kill_switch_actor_valido
+        CHECK (actor IN ('SISTEMA', 'OPERADOR')),
+    CONSTRAINT kill_switch_liquidacion_valida
+        CHECK (liquidacion_estado IN
+               ('NINGUNA', 'PENDIENTE', 'EN_CURSO', 'COMPLETADA', 'FALLIDA')),
+    CONSTRAINT kill_switch_intentos_no_negativos
+        CHECK (intentos_reinicio >= 0)
+);
+
+COMMENT ON TABLE  kill_switch_state IS 'Estado persistido del Kill-Switch maestro (RF-501); una sola fila (CR-005).';
+COMMENT ON COLUMN kill_switch_state.liquidaciones IS 'Liquidaciones acumuladas: 2 tras pulsar dos veces = fallo de idempotencia.';
+COMMENT ON COLUMN kill_switch_state.sesion_reinicio IS 'Fecha ET del reinicio; el disparo automático espera a la siguiente sesión.';
+COMMENT ON COLUMN kill_switch_state.intentos_reinicio IS 'Intentos fallidos de clave de reinicio dentro de la ventana (CR-006).';
+
+
+-- ---------------------------------------------------------------------------
 -- Trigger de fila: rechaza UPDATE y DELETE
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION audit_logs_rechazar_modificacion() RETURNS trigger AS $$

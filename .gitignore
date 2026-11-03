@@ -13,6 +13,10 @@ __pycache__/
 # Salidas generadas localmente
 graphify-out/
 
+# Auditoría pendiente de volcar (append-only, mejor esfuerzo del Kill-Switch:
+# se regenera desde los logs del servicio; ver src/security/auditoria_pendiente.py)
+logs/
+
 # Capturas de verificación de la Fase B2 (material de sesión, no entregable:
 # se regeneran con el patrón de Chromium headless descrito en el informe)
 docs/capturas-b2/

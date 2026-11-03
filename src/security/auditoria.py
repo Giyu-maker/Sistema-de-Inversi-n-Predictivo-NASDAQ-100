@@ -109,6 +109,37 @@ class EventoAuditoria:
             return None
         return json.dumps(self.payload, ensure_ascii=False, default=str, sort_keys=True)
 
+    def a_dict(self) -> dict[str, Any]:
+        """Representación redonda para JSON (la cola de auditoría pendiente)."""
+        texto = self.payload_json()
+        return {
+            "action": self.action,
+            "actor": self.actor,
+            "ip_address": self.ip_address,
+            "user_id": self.user_id,
+            "timestamp_ms": self.timestamp_ms,
+            "payload": json.loads(texto) if texto is not None else None,
+        }
+
+    @classmethod
+    def desde_dict(cls, datos: Any) -> "EventoAuditoria":
+        """Reconstruye el evento desde un registro pendiente.
+
+        Pasa por el mismo `__post_init__` que un evento nuevo: si el registro
+        quedó corrupto (actor desconocido, acción vacía), falla aquí y la
+        línea sigue en el archivo en lugar de entrar en la base malformada.
+        """
+        if not isinstance(datos, dict):
+            raise ValueError("el registro de auditoría pendiente no es un objeto")
+        return cls(
+            action=str(datos.get("action", "")),
+            actor=str(datos.get("actor", "")),
+            ip_address=str(datos.get("ip_address", "")),
+            payload=datos.get("payload"),
+            user_id=datos.get("user_id"),
+            timestamp_ms=datos.get("timestamp_ms"),
+        )
+
 
 class RepositorioAuditoria(Protocol):
     """Superficie que consumen el resto del sistema (y que los tests falsifican)."""
