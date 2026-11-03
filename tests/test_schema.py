@@ -50,9 +50,13 @@ class TestIdempotencia:
         # Se protegen TABLAS: `DROP INDEX IF EXISTS` (D2, retirada del índice
         # no único absorbido por el único) no toca datos y debe poder existir.
         destructivas = re.findall(
-            r"\b(DROP\s+TABLE|DROP\s+SCHEMA|TRUNCATE|ALTER\s+TABLE\s+\w+\s+COLUMN)\b",
+            r"\b(DROP\s+TABLE|DROP\s+SCHEMA|ALTER\s+TABLE\s+\w+\s+COLUMN)\b",
             SQL, flags=re.I,
         )
+        # `TRUNCATE` solo como sentencia al principio de línea: el `REVOKE` de
+        # la sección de inmutabilidad lo nombra como privilegio que se RETIRA,
+        # que es justo lo contrario de vaciar la tabla.
+        destructivas += re.findall(r"^\s*TRUNCATE\b", SQL, flags=re.I | re.M)
         assert destructivas == [], f"sentencias destructivas: {destructivas}"
 
     def test_no_hay_datos_insertados_de_fabrica(self) -> None:
@@ -144,29 +148,99 @@ class TestOtrasTablas:
         assert "CREATE INDEX IF NOT EXISTS idx_ai_predictions_time" not in SQL
 
 
+class TestInmutabilidad:
+    """RF-701 — la inmutabilidad vive en el DDL, no en la capa de aplicación."""
+
+    def test_esta_el_trigger_que_rechaza_update_y_delete(self) -> None:
+        assert "CREATE TRIGGER audit_logs_no_modificar" in SQL
+        assert "BEFORE UPDATE OR DELETE ON audit_logs" in SQL
+        assert "FOR EACH ROW" in SQL
+        assert "audit_logs_rechazar_modificacion()" in SQL
+
+    def test_esta_el_trigger_de_sentencia_para_el_vaciado(self) -> None:
+        # Los triggers por fila NO se disparan ante un TRUNCATE: sin este,
+        # un `TRUNCATE audit_logs` vaciaría los 5 años de auditoría.
+        assert "CREATE TRIGGER audit_logs_no_vaciar" in SQL
+        assert "BEFORE TRUNCATE ON audit_logs" in SQL
+        assert "FOR EACH STATEMENT" in SQL
+
+    def test_los_dos_triggers_estan_enable_always(self) -> None:
+        assert len(re.findall(r"ENABLE ALWAYS TRIGGER", SQL)) == 2
+        assert "ENABLE TRIGGER" not in SQL.replace("ENABLE ALWAYS TRIGGER", "")
+
+    def test_se_revocan_los_privilegios_de_modificacion(self) -> None:
+        # Segunda muralla: ni UPDATE, ni DELETE, ni el vaciado completo.
+        assert re.search(
+            r"REVOKE\s+UPDATE,\s*DELETE,\s*TRUNCATE\s+ON\s+audit_logs\s+FROM\s+PUBLIC",
+            SQL, flags=re.I,
+        )
+        # INSERT y SELECT siguen permitidos: hay que poder escribir y leer.
+        assert not re.search(r"REVOKE\s+INSERT", SQL, flags=re.I)
+        assert not re.search(r"REVOKE\s+SELECT", SQL, flags=re.I)
+
+    def test_las_sentencias_lanzan_excepcion(self) -> None:
+        assert SQL.count("RAISE EXCEPTION") == 2
+        assert "USING ERRCODE" in SQL
+
+    def test_la_migracion_del_actor_va_antes_de_los_triggers(self) -> None:
+        # El backfill de `actor` es un UPDATE: con el trigger ya creado, la
+        # propia migración se rechazaría y el esquema no se podría aplicar.
+        migracion = SQL.index("DO $$")
+        trigger = SQL.index("CREATE TRIGGER audit_logs_no_modificar")
+        assert migracion < trigger, "el UPDATE de migración va después del trigger"
+
+    def test_el_comentario_del_actor_va_despues_de_la_migracion(self) -> None:
+        # En el volumen existente la columna recién existe dentro del DO: un
+        # COMMENT anterior es un error que, con ON_ERROR_STOP, deja el resto
+        # del archivo (triggers y REVOKE) sin aplicar.
+        migracion = SQL.index("DO $$")
+        comentario = SQL.index("COMMENT ON COLUMN audit_logs.actor")
+        assert migracion < comentario, "el COMMENT del actor va antes de crear la columna"
+
+    def test_actor_esta_declarado_en_la_tabla(self) -> None:
+        bloque = re.search(r"CREATE TABLE IF NOT EXISTS audit_logs\s*\((.*?)\n\);", SQL, re.S)
+        assert bloque
+        assert re.search(r"actor\s+VARCHAR\(50\)\s+NOT NULL", bloque.group(1))
+        assert "CHECK (actor IN ('SISTEMA', 'OPERADOR', 'CLAVE_REINICIO'))" in SQL
+
+    def test_actor_no_tiene_default_permanente(self) -> None:
+        # Sin default: si quien escribe olvida el actor, la fila no se inserta.
+        assert re.search(r"actor\s+VARCHAR\(50\)\s+NOT NULL\s+DEFAULT", SQL) is None
+        assert "ALTER COLUMN actor DROP DEFAULT" in SQL
+
+
+#: Marcador que dejan las pruebas vivas de auditoría. Se usa en `payload`, que
+#: es una columna de texto libre: nada del sistema escribe ese valor.
+MARCA_AUDITORIA = "TEST-AUDITORIA-INMUTABLE"
+
+
+def _psql(sql: str, *args: str) -> subprocess.CompletedProcess[str]:
+    """`psql` dentro del contenedor, con ON_ERROR_STOP (a nivel de módulo para
+    que lo usen todas las clases vivas, no solo la de idempotencia)."""
+    entorno = os.environ.copy()
+    usuario = entorno.get("POSTGRES_USER", "ritech")
+    base = entorno.get("POSTGRES_DB", "ritech")
+    return subprocess.run(
+        ["docker", "exec", "-i", "ritech-postgres16", "psql",
+         "-U", usuario, "-d", base, "-v", "ON_ERROR_STOP=1", *args],
+        input=sql, capture_output=True, text=True, timeout=60,
+    )
+
+
+@pytest.fixture()
+def psql():
+    """Salta la parte viva si el contenedor no está levantado."""
+    try:
+        resultado = _psql("SELECT 1;")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pytest.skip("docker no disponible")
+    if resultado.returncode != 0:
+        pytest.skip(f"PostgreSQL no responde: {resultado.stderr.strip()[:120]}")
+    return _psql
+
+
 class TestAplicacionViva:
     """Se ejecuta solo con el contenedor levantado. Lo omite si no hay conexión."""
-
-    @staticmethod
-    def _psql(sql: str) -> subprocess.CompletedProcess[str]:
-        entorno = os.environ.copy()
-        usuario = entorno.get("POSTGRES_USER", "ritech")
-        base = entorno.get("POSTGRES_DB", "ritech")
-        return subprocess.run(
-            ["docker", "exec", "-i", "ritech-postgres16", "psql",
-             "-U", usuario, "-d", base, "-v", "ON_ERROR_STOP=1"],
-            input=sql, capture_output=True, text=True, timeout=60,
-        )
-
-    @pytest.fixture()
-    def psql(self):
-        try:
-            resultado = self._psql("SELECT 1;")
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pytest.skip("docker no disponible")
-        if resultado.returncode != 0:
-            pytest.skip(f"PostgreSQL no responde: {resultado.stderr.strip()[:120]}")
-        return self._psql
 
     def test_el_esquema_se_puede_aplicar_dos_veces(self, psql) -> None:
         # La prueba de idempotencia: la segunda aplicación no debe fallar.
@@ -204,3 +278,140 @@ class TestAplicacionViva:
         # Y la limpieza deja la base como estaba.
         limpieza = psql("DELETE FROM ai_predictions WHERE prediction_time = -1;")
         assert limpieza.returncode == 0
+
+
+class TestAuditoriaInmutable:
+    """RF-701 — la inmutabilidad se verifica contra el motor, no se supone.
+
+    Lección de CR-003 (InfluxDB sobrescribía en silencio): el comportamiento
+    de la base de datos se comprueba aquí, con el contenedor levantado, y se
+    omite si no hay conexión.
+
+    Cada prueba deja el INSERT de control dentro de la MISMA transacción que
+    la sentencia que debe fallar. Si el rechazo llega, psql sale con
+    ON_ERROR_STOP, la conexión se corta y PostgreSQL revuelve la transacción
+    abierta: por eso al final no queda ningún marcador en la tabla y no hace
+    falta un DELETE que, justamente, está prohibido.
+    """
+
+    @staticmethod
+    def _insertar_y(sql: str) -> subprocess.CompletedProcess[str]:
+        """INSERT de control + la sentencia que debe ser rechazada."""
+        return _psql(
+            "BEGIN;\n"
+            "INSERT INTO audit_logs (timestamp, action, actor, ip_address, payload)\n"
+            f"    VALUES (0, 'TEST', 'SISTEMA', '127.0.0.1', '{MARCA_AUDITORIA}');\n"
+            f"{sql}\n"
+        )
+
+    @staticmethod
+    def _marcadores(psql) -> int:
+        """Filas de prueba que quedaron en la tabla (0 = no se coló ninguna)."""
+        salida = psql(
+            f"SELECT count(*) FROM audit_logs WHERE payload = '{MARCA_AUDITORIA}';",
+            "-tA",
+        )
+        return int(salida.stdout.strip() or -1)
+
+    def test_control_el_insert_si_funciona(self, psql) -> None:
+        # Sin esto, un INSERT rechazado haría que todas las pruebas de abajo
+        # "pasaran" por el motivo equivocado.
+        control = _psql(
+            "BEGIN;\n"
+            "INSERT INTO audit_logs (timestamp, action, actor, ip_address, payload)\n"
+            f"    VALUES (0, 'TEST', 'SISTEMA', '127.0.0.1', '{MARCA_AUDITORIA}');\n"
+            "ROLLBACK;\n"
+        )
+        assert control.returncode == 0, control.stderr
+
+    def test_update_se_rechaza(self, psql) -> None:
+        rechazo = self._insertar_y(
+            f"UPDATE audit_logs SET action = 'TAMPERED' WHERE payload = '{MARCA_AUDITORIA}';"
+        )
+        assert rechazo.returncode != 0, rechazo.stdout
+        assert "inmutable" in rechazo.stderr
+        assert "UPDATE" in rechazo.stderr
+        assert self._marcadores(psql) == 0
+
+    def test_delete_se_rechaza(self, psql) -> None:
+        rechazo = self._insertar_y(
+            f"DELETE FROM audit_logs WHERE payload = '{MARCA_AUDITORIA}';"
+        )
+        assert rechazo.returncode != 0, rechazo.stdout
+        assert "inmutable" in rechazo.stderr
+        assert "DELETE" in rechazo.stderr
+        assert self._marcadores(psql) == 0
+
+    def test_truncate_se_rechaza(self, psql) -> None:
+        # El trigger por fila no se dispararía aquí: lo impide el de sentencia.
+        rechazo = self._insertar_y("TRUNCATE audit_logs;")
+        assert rechazo.returncode != 0, rechazo.stdout
+        assert "inmutable" in rechazo.stderr
+        assert self._marcadores(psql) == 0
+
+    def test_los_triggers_estan_activos_y_en_always(self, psql) -> None:
+        # `tgenabled = 'A'` es lo que significa ENABLE ALWAYS en el catálogo.
+        salida = psql(
+            "SELECT count(*) FROM pg_trigger\n"
+            " WHERE tgrelid = 'audit_logs'::regclass\n"
+            "   AND NOT tgisinternal AND tgenabled = 'A';",
+            "-tA",
+        )
+        assert int(salida.stdout.strip()) == 2
+
+    def test_un_rol_normal_no_puede_modificar(self, psql) -> None:
+        # El REVOKE se verifica con un rol que NO es superusuario: el servicio
+        # entra como superusuario y para ese los privilegios dan 't' aunque se
+        # revocen — por eso, para él, la garantía real es el trigger (arriba).
+        # El rol se crea y se revuelve en la misma transacción: no queda nada
+        # detrás en el clúster.
+        salida = psql(
+            "BEGIN;\n"
+            "DROP ROLE IF EXISTS ritech_prueba_auditoria;\n"
+            "CREATE ROLE ritech_prueba_auditoria NOLOGIN;\n"
+            "GRANT SELECT, INSERT ON audit_logs TO ritech_prueba_auditoria;\n"
+            "SELECT has_table_privilege('ritech_prueba_auditoria', 'audit_logs', 'INSERT');\n"
+            "SELECT has_table_privilege('ritech_prueba_auditoria', 'audit_logs', 'SELECT');\n"
+            "SELECT has_table_privilege('ritech_prueba_auditoria', 'audit_logs', 'UPDATE');\n"
+            "SELECT has_table_privilege('ritech_prueba_auditoria', 'audit_logs', 'DELETE');\n"
+            "SELECT has_table_privilege('ritech_prueba_auditoria', 'audit_logs', 'TRUNCATE');\n"
+            "ROLLBACK;\n",
+            "-tA",
+        )
+        assert salida.returncode == 0, salida.stderr
+        # Solo las respuestas de las cinco consultas (psql imprime además las
+        # etiquetas de BEGIN/CREATE ROLE/GRANT/ROLLBACK).
+        respuestas = [l for l in salida.stdout.splitlines() if l in ("t", "f")]
+        assert respuestas == ["t", "t", "f", "f", "f"], respuestas
+
+    def test_actor_es_obligatorio_y_esta_restringido(self, psql) -> None:
+        sin_actor = psql(
+            "INSERT INTO audit_logs (timestamp, action, ip_address) "
+            "VALUES (0, 'TEST', '127.0.0.1');"
+        )
+        assert sin_actor.returncode != 0
+        assert "actor" in sin_actor.stderr
+
+        actor_malo = psql(
+            "INSERT INTO audit_logs (timestamp, action, actor, ip_address) "
+            "VALUES (0, 'TEST', 'HACKER', '127.0.0.1');"
+        )
+        assert actor_malo.returncode != 0
+        assert "audit_logs_actor_valido" in actor_malo.stderr
+
+    def test_las_filas_previas_quedaron_con_actor_sin_default(self, psql) -> None:
+        # La migración del bloque DO: backfill + NOT NULL + sin default.
+        nulos = psql("SELECT count(*) FROM audit_logs WHERE actor IS NULL;", "-tA")
+        assert int(nulos.stdout.strip()) == 0
+
+        default = psql(
+            "SELECT coalesce(column_default, '') FROM information_schema.columns\n"
+            " WHERE table_schema = 'public' AND table_name = 'audit_logs'\n"
+            "   AND column_name = 'actor';",
+            "-tA",
+        )
+        assert default.stdout.strip() == ""
+
+    def test_no_quedaron_marcadores_de_las_pruebas(self, psql) -> None:
+        # Barrido final: ninguna prueba dejó filas detrás.
+        assert self._marcadores(psql) == 0

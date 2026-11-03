@@ -133,10 +133,18 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     timestamp  BIGINT       NOT NULL,
     user_id    UUID,
     action     VARCHAR(100) NOT NULL,
+    -- CR-005: QUIÉN actuó. Sin DEFAULT permanente a propósito: si el valor se
+    -- olvida la fila no se inserta, y un log sin actor no prueba nada. Los
+    -- tres valores son los que existen hoy (sin autenticación de usuarios,
+    -- CR-006): el scheduler es SISTEMA, un disparo manual es OPERADOR y el
+    -- reinicio con clave es CLAVE_REINICIO.
+    actor      VARCHAR(50)  NOT NULL,
     ip_address VARCHAR(45)  NOT NULL,
     payload    TEXT,
     CONSTRAINT audit_logs_user_fk
-        FOREIGN KEY (user_id) REFERENCES trader_users (id) ON DELETE SET NULL
+        FOREIGN KEY (user_id) REFERENCES trader_users (id) ON DELETE SET NULL,
+    CONSTRAINT audit_logs_actor_valido
+        CHECK (actor IN ('SISTEMA', 'OPERADOR', 'CLAVE_REINICIO'))
     -- La IP es NOT NULL porque el SRS §4.2.5 la exige y el AGENTS.md §5.3
     -- obliga a registrarla en cada acción de negocio. Sin ella el registro de
     -- auditoría no prueba nada sobre quién ordenó qué desde dónde.
@@ -149,3 +157,109 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_action
 
 COMMENT ON COLUMN audit_logs.ip_address IS 'IP interna del equipo en la intranet de RiTech (AGENTS.md §5.3).';
 COMMENT ON COLUMN audit_logs.payload IS 'Detalles técnicos en JSON; puede incluir la configuración previa a un cambio.';
+
+
+-- ===========================================================================
+-- Inmutabilidad de `audit_logs` A NIVEL DE BASE DE DATOS (RF-701)
+-- ===========================================================================
+-- La lección del insert-if-absent de InfluxDB (CR-003): el comportamiento del
+-- motor NO se asume, se verifica contra el motor real. Aquí la garantía no
+-- la da la capa de aplicación sino PostgreSQL:
+--
+--   * UPDATE y DELETE se rechazan fila a fila;
+--   * TRUNCATE se rechaza a nivel de sentencia, porque los triggers por fila
+--     NO se disparan ante un TRUNCATE (hace falta un trigger de sentencia);
+--   * ambos quedan en ENABLE ALWAYS;
+--   * y los privilegios de modificación se revocan como segunda muralla.
+--
+-- Riesgo residual, documentado y no eliminado: el servicio entra como
+-- superusuario, que SÍ salta los permisos y SÍ puede ejecutar
+-- `ALTER TABLE ... DISABLE TRIGGER`. Los triggers, en cambio, se disparan
+-- también para el superusuario. Dejar de entrar como superusuario (rol de
+-- aplicación de mínimo privilegio) queda como trabajo futuro: CR-006.
+
+-- ---------------------------------------------------------------------------
+-- Migración idempotente de `actor` para el volumen que ya existe
+-- ---------------------------------------------------------------------------
+-- Va ANTES de los triggers porque su backfill es un UPDATE: con el trigger
+-- puesto, la propia migración se rechazaría. El cuerpo solo se ejecuta si la
+-- columna no estaba, así que la segunda aplicación del archivo no vuelve a
+-- tocar ninguna fila (y por eso tampoco se dispara el trigger).
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'audit_logs'
+          AND column_name = 'actor'
+    ) THEN
+        ALTER TABLE audit_logs ADD COLUMN actor VARCHAR(50);
+        UPDATE audit_logs SET actor = 'SISTEMA' WHERE actor IS NULL;
+        ALTER TABLE audit_logs ALTER COLUMN actor SET NOT NULL;
+        ALTER TABLE audit_logs ADD CONSTRAINT audit_logs_actor_valido
+            CHECK (actor IN ('SISTEMA', 'OPERADOR', 'CLAVE_REINICIO'));
+    END IF;
+    -- Sin default permanente: quien escribe el log tiene que decir quién. Es
+    -- un no-op si nunca lo hubo, así que puede correr en cada aplicación.
+    ALTER TABLE audit_logs ALTER COLUMN actor DROP DEFAULT;
+END $$;
+
+-- Va DESPUÉS del bloque DO: en el volumen ya existente la columna recién
+-- existe ahí, y un COMMENT sobre una columna inexistente es un error que
+-- detendría el resto del archivo con ON_ERROR_STOP.
+COMMENT ON COLUMN audit_logs.actor IS 'Quién actuó: SISTEMA, OPERADOR o CLAVE_REINICIO (CR-005).';
+
+
+-- ---------------------------------------------------------------------------
+-- Trigger de fila: rechaza UPDATE y DELETE
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION audit_logs_rechazar_modificacion() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION
+        'audit_logs es inmutable: % sobre % no está permitido (RF-701).',
+        TG_OP, TG_TABLE_NAME
+        USING ERRCODE = 'P0001';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS audit_logs_no_modificar ON audit_logs;
+CREATE TRIGGER audit_logs_no_modificar
+    BEFORE UPDATE OR DELETE ON audit_logs
+    FOR EACH ROW
+    EXECUTE FUNCTION audit_logs_rechazar_modificacion();
+
+-- ENABLE ALWAYS: el trigger corre también en sesión de réplica, donde por
+-- defecto los triggers de fila se silencian.
+ALTER TABLE audit_logs ENABLE ALWAYS TRIGGER audit_logs_no_modificar;
+
+
+-- ---------------------------------------------------------------------------
+-- Trigger de sentencia: rechaza TRUNCATE (el de fila no lo alcanza)
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION audit_logs_rechazar_truncado() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION
+        'audit_logs es inmutable: el vaciado completo de la tabla no está permitido (RF-701).'
+        USING ERRCODE = 'P0001';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS audit_logs_no_vaciar ON audit_logs;
+CREATE TRIGGER audit_logs_no_vaciar
+    BEFORE TRUNCATE ON audit_logs
+    FOR EACH STATEMENT
+    EXECUTE FUNCTION audit_logs_rechazar_truncado();
+
+ALTER TABLE audit_logs ENABLE ALWAYS TRIGGER audit_logs_no_vaciar;
+
+
+-- ---------------------------------------------------------------------------
+-- Segunda muralla: sin privilegios de modificación
+-- ---------------------------------------------------------------------------
+-- INSERT sigue permitido (es lo único que hace el sistema) y SELECT también
+-- (la auditoría tiene que poder leerse). UPDATE, DELETE y el vaciado completo
+-- se revocan de PUBLIC; el dueño de la tabla (hoy el superusuario del
+-- servicio) queda cubierto por los triggers de arriba.
+REVOKE UPDATE, DELETE, TRUNCATE ON audit_logs FROM PUBLIC;
+
