@@ -248,6 +248,22 @@ def session_of(candles: list[Candle]) -> list[list[Candle]]:
     return [s for s in sesiones if s]
 
 
+def apertura_de_sesion(candles: list[Candle]) -> Candle | None:
+    """Primera vela de la última sesión: la de apertura (RF-201/RF-202).
+
+    El precio de apertura es la referencia contra la que se mide la pérdida
+    de la sesión, y lo usan DOS consumidores distintos: `/api/yield` (para
+    mostrarla) y el disparo automático del Kill-Switch (para actuar). Una
+    sola función para que los dos no puedan discrepar: si el panel dijera
+    «−1,10 %» y el motor disparara a −1,25 % con otra base, nadie sabría
+    cuál de los dos tenía razón.
+
+    `None` cuando no hay velas: no hay sesión que abrir.
+    """
+    sesiones = session_of(candles)
+    return sesiones[-1][0] if sesiones else None
+
+
 def forward_return_pct(session: list[Candle], start: int) -> float:
     """Variación porcentual de las próximas `HORIZON` velas desde la `start`.
 

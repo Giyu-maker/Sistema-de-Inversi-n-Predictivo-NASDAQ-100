@@ -49,15 +49,23 @@ compartida es la fila de la base, y por eso `esta_bloqueado()` devuelve
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, Callable
 
-from src.database.kill_switch import EstadoKillSwitch, RepositorioKillSwitch
-from src.integration.broker import BrokerGateway
+from src.database.influx_lectura import LectorVelas
+from src.database.kill_switch import (
+    EstadoKillSwitch,
+    KillSwitchPostgres,
+    RepositorioKillSwitch,
+)
+from src.database.transacciones import TransaccionesPostgres
+from src.integration.broker import BrokerGateway, SimulatedBrokerGateway
 from src.security.auditoria import (
+    AuditoriaPostgres,
     EventoAuditoria,
     RepositorioAuditoria,
     auditar_sincrono,
@@ -287,12 +295,15 @@ class KillSwitchEngine:
         origen: str,
         actor: str,
         ip_address: str,
+        extra: dict[str, Any] | None = None,
     ) -> ResultadoDisparo:
         """Dispara el Kill-Switch en el orden aprobado: (a) bandera, (b) BD,
         (c) liquidación, (d) auditoría.
 
         `primera_vez = False` significa que ya estaba activo: se responde sin
-        liquidar de nuevo (idempotencia, RF-501).
+        liquidar de nuevo (idempotencia, RF-501). `extra` añade datos al
+        `payload` de la auditoría —p. ej. la pérdida real de la sesión cuando
+        es un gap (RF-203)— sin ensanchar la firma.
         """
         inicio = time.monotonic()
 
@@ -353,6 +364,8 @@ class KillSwitchEngine:
         }
         if fallo:
             payload["fallo_liquidacion"] = fallo
+        if extra:
+            payload.update(extra)
         evento = EventoAuditoria(
             action=ACCION_DISPARO,
             actor=actor,
@@ -402,6 +415,35 @@ class KillSwitchEngine:
         except Exception as exc:  # noqa: BLE001
             logger.error("No se pudo marcar la liquidación como %s: %s", estado, exc)
             return False
+
+    # -- disparo automático ------------------------------------------------
+
+    def puede_disparar_automatico(self, sesion: date) -> bool:
+        """¿Toca evaluar el umbral de pérdida en ESTA sesión? (anti-bucle)
+
+        Tres reglas, en orden:
+
+        1. **Ya está activo** → no: no hay nada que disparar.
+        2. **Hubo un reinicio en esta misma sesión** → no hasta la siguiente
+           sesión. Sin esto, quien reinicia con la pérdida todavía por debajo
+           del límite vería el sistema volver a dispararse en el siguiente
+           tick, cada 5 minutos, sin forma de salir.
+        3. **No se pudo leer el estado** → SÍ: no disparar con una pérdida
+           real por encima del límite sería peor que un disparo repetido, y el
+           compare-and-set hace inocuo cualquier duplicado.
+        """
+        try:
+            estado = self._repo.leer()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("No se pudo leer el estado para evaluar el umbral: %s", exc)
+            return True
+        if estado is None:
+            return True
+        if estado.activo:
+            return False
+        if estado.sesion_reinicio is not None and estado.sesion_reinicio >= sesion:
+            return False
+        return True
 
     # -- reinicio autorizado (RF-503) --------------------------------------
 
@@ -490,3 +532,45 @@ def _es_disparo(registro: Any) -> bool:
         return False
     evento = registro.get("evento")
     return isinstance(evento, dict) and evento.get("action") == ACCION_DISPARO
+
+
+def motor_desde_entorno(lector: LectorVelas, *, simbolo: str | None = None) -> KillSwitchEngine:
+    """Motor real del Kill-Switch y su preparación al arrancar.
+
+    Lo comparten el API y el scheduler: dos procesos, un mismo código, para
+    que el panel y el ciclo evalúen el bloqueo de la misma manera.
+
+    * **Precio**: del mismo lector que el resto del sistema. Si no hay velas,
+      la liquidación falla en lugar de inventar un número.
+    * **Preparación**: siembra la fila si no existe y vuelca/repara lo que
+      haya quedado pendiente. Todo en el mejor esfuerzo: un fallo de
+      PostgreSQL aquí no puede impedir que el proceso arranque —el estado se
+      leerá como «no verificado», que es exactamente lo que es—.
+    """
+
+    def precio_actual(_simbolo: str) -> float:
+        vela = lector.ultima_vela()
+        if vela is None:
+            raise RuntimeError("no hay velas de precio para liquidar")
+        return vela.price_close
+
+    repo = KillSwitchPostgres()
+    motor = KillSwitchEngine(
+        repo=repo,
+        broker=SimulatedBrokerGateway(
+            TransaccionesPostgres(),
+            precio_actual=precio_actual,
+            simbolo=simbolo or os.environ.get("SIMBOLO", "QQQ"),
+        ),
+        auditor=AuditoriaPostgres(),
+        cola=ColaAuditoriaPendiente(os.environ.get("AUDITORIA_PENDIENTE_RUTA") or None),
+    )
+    try:
+        if repo.sembrar_si_vacio():
+            logger.info("Estado inicial del Kill-Switch sembrado: desactivado.")
+        pendientes = motor.recuperar()
+        if pendientes:
+            logger.warning("Auditoría pendiente volcada al arrancar: %d evento(s).", pendientes)
+    except Exception as exc:  # noqa: BLE001 — el proceso no puede dejar de arrancar
+        logger.error("No se pudo preparar el estado del Kill-Switch: %s", exc)
+    return motor

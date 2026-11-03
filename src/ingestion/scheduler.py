@@ -38,11 +38,14 @@ from datetime import date
 from typing import TYPE_CHECKING, Any
 
 from src.ai.client import InferenceClient
-from src.ai.prediccion import VELAS_A_CONSULTAR, predecir_y_persistir
+from src.ai.features import apertura_de_sesion
+from src.ai.prediccion import VELAS_A_CONSULTAR, a_candle, predecir_y_persistir
 from src.calculator.asymmetric import AsymmetricCalculator
 from src.database.predictions import RepositorioPredicciones
 from src.ingestion.engine import IngestionEngine, NasdaqCandle, parse_raw_candle
 from src.ingestion.huecos import CuotaBasica, recuperar_hueco
+from src.security.auditoria import IP_LOCAL
+from src.security.kill_switch import KillSwitchEngine, motor_desde_entorno
 from src.utils.mercado import ahora_ny, feriados_operativos, ventana_de_consulta
 
 if TYPE_CHECKING:  # solo anotaciones: el lector real se construye en main()
@@ -83,6 +86,7 @@ class IngestionScheduler:
         predicciones: RepositorioPredicciones | None = None,
         cuota: CuotaBasica | None = None,
         feriados: frozenset[date] | None = None,
+        kill_switch: KillSwitchEngine | None = None,
     ) -> None:
         self.engine = engine
         self.calculator = calculator
@@ -90,6 +94,10 @@ class IngestionScheduler:
         self.lector = lector
         self.cliente = cliente
         self.predicciones = predicciones
+        # Disparo automático del −1,25 % de sesión (RF-202/RF-503). Sin
+        # motor no hay disparo, y el ciclo de datos sigue siendo útil: es el
+        # mismo criterio de «paso completo o no se configura» del paso de IA.
+        self.kill_switch = kill_switch
         # Recuperación de huecos (Fase B2.5): corre en el primer tick — es
         # decir, al arrancar — y en cada tick posterior. La cuota se crea aquí
         # para que sus ventanas duren lo que dura el proceso.
@@ -129,6 +137,9 @@ class IngestionScheduler:
             latest.price_low, latest.price_close, latest.volume,
         )
         self._predecir()
+        # RF-202/RF-503: el umbral de pérdida de la sesión se evalúa en cada
+        # tick, después de persistir la vela, con el MISMO motor que el botón.
+        self._evaluar_umbral_de_perdida(latest)
         if len(candles) < 2:
             logger.warning("Menos de dos velas en el payload: se persiste la última sin calcular variación.")
             return
@@ -141,6 +152,75 @@ class IngestionScheduler:
         )
         if self.calculator.is_market_gap(variation):
             logger.warning(self.calculator.gap_loss_notice(variation))
+
+    def _evaluar_umbral_de_perdida(self, latest: NasdaqCandle) -> None:
+        """Disparo automático al cruzar el −1,25 % de la sesión (RF-202, RF-503).
+
+        Contra el precio de **apertura de la sesión**, con la misma función
+        que usa `/api/yield` para mostrarlo (`apertura_de_sesion`): el panel y
+        el motor no pueden discrepar sobre qué precio es la referencia.
+
+        * Actor `SISTEMA`, origen `AUTOMATICO`, IP local —es un proceso, no
+          una persona—.
+        * **Dispara aunque no haya posiciones abiertas**: lo que hace falta
+          es bloquear (RF-503); una liquidación sin nada que vender se
+          registra igual y prueba que el sistema intentó liquidar.
+        * Si es un **gap** (RF-203), el motivo lleva la justificación y el
+          `payload` registra la pérdida REAL y su diferencia con el límite.
+        * Un fallo aquí no puede tumbar la cadencia: se registra y sigue.
+        """
+        if self.kill_switch is None or self.lector is None:
+            return
+        try:
+            velas = self.lector.ultimas_velas(VELAS_A_CONSULTAR)
+            primera = apertura_de_sesion([a_candle(v) for v in velas])
+        except Exception as exc:  # noqa: BLE001 — la cadencia manda
+            logger.error("No se pudo evaluar la pérdida de sesión: %s", exc)
+            return
+        if primera is None or primera.open <= 0:
+            return
+        if not self.calculator.is_threshold_breached(primera.open, latest.price_close):
+            return
+
+        variacion = (latest.price_close - primera.open) / primera.open * 100
+        sesion = ahora_ny().date()
+        if not self.kill_switch.puede_disparar_automatico(sesion):
+            logger.info(
+                "Umbral de pérdida alcanzado, sin nuevo disparo: ya está "
+                "bloqueado o la sesión ya tuvo un reinicio."
+            )
+            return
+
+        extra: dict[str, Any] = {
+            "variacion_sesion_pct": round(variacion, 4),
+            "limite_pct": AsymmetricCalculator.MAX_LOSS_PCT,
+            "apertura_sesion_ms": primera.timestamp,
+            "precio_apertura": primera.open,
+            "precio_ultimo": latest.price_close,
+        }
+        motivo = (
+            f"Pérdida de sesión de {abs(variacion):.2f} % "
+            f"(límite {AsymmetricCalculator.MAX_LOSS_PCT:.2f} %)."
+        )
+        if self.calculator.is_market_gap(variacion):
+            # RF-203: manda la pérdida real, y hay que justificar la
+            # diferencia. El aviso completo va en el payload; en la columna
+            # (VARCHAR(200)) solo cabe la frase corta.
+            extra["gap"] = True
+            extra["perdida_real_pct"] = round(variacion, 4)
+            extra["diferencia_pp"] = round(
+                abs(variacion) - AsymmetricCalculator.MAX_LOSS_PCT, 4
+            )
+            extra["aviso_gap"] = self.calculator.gap_loss_notice(variacion)
+
+        resultado = self.kill_switch.execute_global_liquidation(
+            motivo=motivo[:200],
+            origen="AUTOMATICO",
+            actor="SISTEMA",
+            ip_address=IP_LOCAL,
+            extra=extra,
+        )
+        logger.warning("Kill-Switch automático: %s", resultado.detalle)
 
     async def _recuperar_huecos(self) -> None:
         """Cierra huecos de ingesta antes del tick (B2.5) — ver `src/ingestion/huecos.py`.
@@ -266,14 +346,18 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001 — ver comentario superior
         logger.error("No se pudo sembrar la configuración inicial: %s", exc)
 
+    lector = LectorInflux(influx)
     scheduler = IngestionScheduler(
         IngestionEngine(influx, api_key),
         AsymmetricCalculator,
-        lector=LectorInflux(influx),
+        lector=lector,
         # Requiere INFERENCE_URL: sin ella el ciclo no estaría cerrado y el
         # error debe salir aquí, no al quinto tick en silencio.
         cliente=InferenceClient(),
         predicciones=PrediccionesPostgres(),
+        # Mismo motor que el API (RF-501): siembra, volcado pendiente y el
+        # disparo automático del −1,25 % de la sesión en cada tick.
+        kill_switch=motor_desde_entorno(lector),
     )
     asyncio.run(scheduler.run())
 

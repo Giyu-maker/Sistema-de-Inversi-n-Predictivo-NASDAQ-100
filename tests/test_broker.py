@@ -11,34 +11,9 @@ import pytest
 
 from src.database.transacciones import TransaccionNueva, TransaccionGuardada
 from src.integration.broker import NuevaOrden, SimulatedBrokerGateway
+from tests.fakes import TransaccionesFalsas
 
 UUID_PREDICCION = "3f1e0a4c-77f0-4d6e-9a1b-2c3d4e5f6071"
-
-
-class TransaccionesFalsas:
-    """Repositorio en memoria con el contrato de `RepositorioTransacciones`."""
-
-    def __init__(self, *, neta: float = 0.0, roto: bool = False) -> None:
-        self.neta = neta
-        self.roto = roto
-        self.guardadas: list[TransaccionNueva] = []
-
-    def _si_roto(self) -> None:
-        if self.roto:
-            raise RuntimeError("postgres no responde")
-
-    def guardar(self, transaccion: TransaccionNueva) -> str:
-        self._si_roto()
-        self.guardadas.append(transaccion)
-        return f"id-{len(self.guardadas)}"
-
-    def cantidad_neta(self) -> float:
-        self._si_roto()
-        return self.neta
-
-    def listar(self, limit: int, offset: int) -> tuple[list[TransaccionGuardada], int]:
-        self._si_roto()
-        return [], 0
 
 
 def gateway(

@@ -554,11 +554,11 @@ class TestMotorReal:
     """
 
     def test_se_monta_siembra_y_responde(self, repo_real) -> None:
-        from src.endpoints.dependencias import motor_kill_switch
+        from src.security.kill_switch import motor_desde_entorno
         from tests.fakes import LectorFalso
 
         _cargar_env()
-        motor = motor_kill_switch(LectorFalso())
+        motor = motor_desde_entorno(LectorFalso())
         resumen = motor.resumen()
 
         assert resumen.activo in (True, False, None)
@@ -566,9 +566,83 @@ class TestMotorReal:
         assert motor.esta_bloqueado() == resumen.activo
 
     def test_la_siembra_no_duplica_la_fila(self, repo_real) -> None:
-        from src.endpoints.dependencias import motor_kill_switch
+        from src.security.kill_switch import motor_desde_entorno
         from tests.fakes import LectorFalso
 
         _cargar_env()
-        motor_kill_switch(LectorFalso())
-        assert motor_kill_switch(LectorFalso()).estado() is not None
+        motor_desde_entorno(LectorFalso())
+        assert motor_desde_entorno(LectorFalso()).estado() is not None
+
+
+class TestLatenciasRnf010:
+    """RNF-010 medido: pulsación→bloqueo y pulsación→liquidación.
+
+    RNF-010 pide «prioridad a nivel de hilos de CPU», que en Python no existe
+    literalmente (ver el docstring de `src/security/kill_switch.py`). Lo que
+    sí se puede cumplir es el orden y la inmediatez, y eso se mide aquí:
+    cuánto tarda el corte y cuánto tarda la liquidación tras la pulsación.
+    """
+
+    @staticmethod
+    def _percentil(valores: list[float], p: float) -> float:
+        ordenados = sorted(valores)
+        posicion = int(round(p * (len(ordenados) - 1)))
+        return ordenados[max(0, min(len(ordenados) - 1, posicion))]
+
+    @staticmethod
+    def _medir(repo, n: int) -> tuple[list[float], list[float]]:
+        """`n` disparos completos, cada uno con su reinicio (estado limpio)."""
+        bloqueos: list[float] = []
+        liquidaciones: list[float] = []
+        for _ in range(n):
+            banda = BanderaBloqueo()
+            motor = KillSwitchEngine(
+                repo, BrokerKillSwitchFalso(), AuditorKillSwitchFalso(),
+                banda=banda, ahora_ms=lambda: 1_800_000_000_000,
+            )
+            resultado = motor.execute_global_liquidation(
+                motivo="medición RNF-010", origen="MANUAL",
+                actor="OPERADOR", ip_address="127.0.0.1",
+            )
+            assert resultado.primera_vez is True, "cada muestra parte de inactivo"
+            bloqueos.append(resultado.ms_bloqueo)
+            liquidaciones.append(resultado.ms_liquidacion)
+            repo.reiniciar(ahora_ms=2, sesion=SESION)
+        return bloqueos, liquidaciones
+
+    def test_las_latencias_caben_en_la_cota(self) -> None:
+        # Cota holgada: con dobles no hay red ni disco, y aun así el corte
+        # no debe tardar más de unos milisegundos.
+        bloqueos, liquidaciones = self._medir(RepoKillSwitchFalso(), n=50)
+        p95_bloqueo = self._percentil(bloqueos, 0.95)
+        p95_liquidacion = self._percentil(liquidaciones, 0.95)
+        print(
+            f"\nRNF-010 (dobles): bloqueo p50 {self._percentil(bloqueos, 0.5):.3f} ms "
+            f"/ p95 {p95_bloqueo:.3f} ms · liquidación p50 "
+            f"{self._percentil(liquidaciones, 0.5):.3f} ms / p95 {p95_liquidacion:.3f} ms"
+        )
+        assert p95_bloqueo < 50.0, "el corte no puede tardar más que esto"
+        assert p95_liquidacion < 100.0
+
+    def test_contra_postgres_real(self, repo_real) -> None:
+        """Las mismas cifras con el compare-and-set de verdad.
+
+        Sin `audit_logs` de por medio (el doble de auditoría): lo que se
+        mide es la banda + el CAS en PostgreSQL real + la liquidación.
+        Deja `kill_switch_state` inactiva, como la encontró.
+        """
+        bloqueos, liquidaciones = self._medir(repo_real, n=20)
+        p95_bloqueo = self._percentil(bloqueos, 0.95)
+        p95_liquidacion = self._percentil(liquidaciones, 0.95)
+        print(
+            f"\nRNF-010 (PostgreSQL real): bloqueo p50 "
+            f"{self._percentil(bloqueos, 0.5):.3f} ms / p95 {p95_bloqueo:.3f} ms · "
+            f"liquidación p50 {self._percentil(liquidaciones, 0.5):.3f} ms / "
+            f"p95 {p95_liquidacion:.3f} ms"
+        )
+        assert repo_real.leer() is not None
+        assert repo_real.leer().activo is False, "la medición deja todo inactivo"
+        # RNF-010 no da una cifra; la cota es la de RNF-003 (500 ms) por
+        # prudencia, y en la práctica va dos órdenes de magnitud por debajo.
+        assert p95_bloqueo < 500.0
+        assert p95_liquidacion < 500.0

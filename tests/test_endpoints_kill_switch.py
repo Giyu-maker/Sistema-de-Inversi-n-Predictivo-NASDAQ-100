@@ -8,12 +8,15 @@ reinicio— sin contenedor.
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 from src.security import clave_reinicio
+from src.security.auditoria_pendiente import ColaAuditoriaPendiente
 from src.security.kill_switch import BanderaBloqueo, KillSwitchEngine
 from tests.fakes import (
     AHORA_EN_SESION,
@@ -46,8 +49,15 @@ def montar(
     intentos: int = 0,
     ultimo_intento: int = 0,
     con_fila: bool = True,
+    cola: ColaAuditoriaPendiente | None = None,
 ) -> SimpleNamespace:
-    """Cliente de prueba + las piezas del motor, para mirarlas después."""
+    """Cliente de prueba + las piezas del motor, para mirarlas después.
+
+    La cola pendiente por defecto va a un directorio temporal: NUNCA a
+    `logs/auditoria-pendiente.jsonl`, que es el archivo real. Un evento
+    escrito ahí por un test haría que `motor_desde_entorno` «repusiera» un
+    bloqueo en la base de verdad al arrancar en otro test.
+    """
     repo = RepoKillSwitchFalso(con_fila=con_fila)
     repo.fila = estado_kill_switch(
         activo=activo,
@@ -59,14 +69,16 @@ def montar(
     broker = BrokerKillSwitchFalso()
     broker.banda = banda  # para poder comprobar el orden (a) → (c)
     auditor = AuditorKillSwitchFalso(roto=auditor_roto)
+    if cola is None:
+        cola = ColaAuditoriaPendiente(Path(tempfile.mkdtemp()) / "pendiente.jsonl")
     motor = KillSwitchEngine(
-        repo, broker, auditor, banda=banda, ahora_ms=lambda: AHORA_MS
+        repo, broker, auditor, cola=cola, banda=banda, ahora_ms=lambda: AHORA_MS
     )
     estado = estado_de_prueba(motor=motor, velas=_velas())
     return SimpleNamespace(
         cliente=cliente_de_prueba(estado),
         repo=repo, broker=broker, auditor=auditor, banda=banda, motor=motor,
-        estado=estado,
+        cola=cola, estado=estado,
     )
 
 
@@ -153,6 +165,9 @@ class TestDisparo:
         assert respuesta.status_code == 200
         assert respuesta.json()["auditoria_ok"] is False
         assert piezas.banda.activo is True, "la acción NO depende de la auditoría"
+        # ...pero el evento no se pierde: queda en la cola para volcarlo.
+        assert piezas.cola.pendientes() == 1
+        assert piezas.cola.leer()[0]["evento"]["action"] == "KILL_SWITCH_TRIGGERED"
 
 
 class TestReinicio:
@@ -355,3 +370,42 @@ class TestEstadoEnStatus:
         assert cuerpo["estado"] == "AMARILLO"
         assert cuerpo["kill_switch"]["activo"] is None
         assert cuerpo["senal"]["operable"] is False
+
+
+class TestLatenciaDeLaPulsacion:
+    """RNF-010 desde el cliente: pulsación → respuesta del endpoint.
+
+    El número del motor (banda + CAS + liquidación) está en
+    `tests/test_kill_switch.py::TestLatenciasRnf010`; aquí se mide lo que
+    ve quien pulsa el botón: la petición HTTP entera con el motor real
+    sobre dobles de base de datos.
+    """
+
+    @staticmethod
+    def _percentil(valores: list[float], p: float) -> float:
+        ordenados = sorted(valores)
+        posicion = int(round(p * (len(ordenados) - 1)))
+        return ordenados[max(0, min(len(ordenados) - 1, posicion))]
+
+    def test_pulsacion_a_respuesta(self) -> None:
+        import time
+
+        piezas = montar()
+        muestras: list[float] = []
+        for _ in range(30):
+            inicio = time.perf_counter()
+            respuesta = piezas.cliente.post("/api/kill-switch")
+            muestras.append((time.perf_counter() - inicio) * 1000)
+            assert respuesta.status_code == 200
+            assert respuesta.json()["primera_vez"] is True
+            # Cada muestra parte de «inactivo»: se restablece el doble.
+            piezas.repo.fila = estado_kill_switch()
+            piezas.banda.liberar()
+
+        p50 = self._percentil(muestras, 0.5)
+        p95 = self._percentil(muestras, 0.95)
+        print(
+            f"\nRNF-010 (HTTP, dobles): pulsación→respuesta "
+            f"p50 {p50:.2f} ms / p95 {p95:.2f} ms"
+        )
+        assert p95 < 250.0, "la pulsación no puede tardar más que esto"

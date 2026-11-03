@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+from src.calculator.asymmetric import AsymmetricCalculator
 from src.ingestion.engine import parse_raw_candle
 from src.ingestion.huecos import InformeHueco
 from src.ingestion.scheduler import IngestionScheduler, _sorted_candles, _variation_pct
@@ -48,6 +49,10 @@ def _calculator() -> Mock:
     calculator = Mock()
     calculator.calculate_yield.return_value = 2.0
     calculator.is_market_gap.return_value = False
+    # El umbral NO se mockea: es la regla de RF-202 que se está probando, y
+    # un Mock habría devuelto «siempre cierto» y encendido el Kill-Switch
+    # en todos los tests.
+    calculator.is_threshold_breached = AsymmetricCalculator.is_threshold_breached
     return calculator
 
 
@@ -211,6 +216,9 @@ def test_main_siembra_la_configuracion_y_arranca_el_ciclo(
     monkeypatch.setattr("src.database.predictions.PrediccionesPostgres", Mock())
     monkeypatch.setattr(mod_sched, "IngestionEngine", Mock())
     monkeypatch.setattr(mod_sched, "InferenceClient", Mock())
+    # El motor del Kill-Switch no es el objeto de esta prueba: montarlo aquí
+    # intentaría una conexión real a PostgreSQL en medio de un test unitario.
+    monkeypatch.setattr(mod_sched, "motor_desde_entorno", Mock(return_value=Mock()))
     monkeypatch.setattr(mod_sched, "IngestionScheduler", scheduler_falso)
 
     mod_sched.main()
@@ -219,3 +227,210 @@ def test_main_siembra_la_configuracion_y_arranca_el_ciclo(
     # (D3): tiene que ejecutarse, no solo intentarse.
     assert configuraciones.sembradas == 1
     scheduler_falso.return_value.run.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Disparo automático del −1,25 % de la sesión (RF-202, RF-503)
+# ---------------------------------------------------------------------------
+
+
+def _sesion_cayendo(variacion_pct: float, n: int = 12):
+    """Sesión cuya apertura es 500 y cuyo último cierre cae `variacion_pct`.
+
+    Velas de `fakes.vela` (open = close = precio), así que la apertura de la
+    sesión es el primer precio y el cierre el último.
+    """
+    from tests.fakes import APERTURA_MS, INTERVALO_MS, vela
+
+    objetivo = 500.0 * (1 + variacion_pct / 100.0)
+    return [
+        vela(
+            APERTURA_MS + i * INTERVALO_MS,
+            500.0 + (objetivo - 500.0) * i / (n - 1),
+        )
+        for i in range(n)
+    ]
+
+
+def _payload_de(ultima) -> dict[str, Any]:
+    """Payload del proveedor con el OHLC real de la última vela de la serie."""
+    return {"candles": {"2026-10-06 09:35:00": {
+        "open": ultima.price_open, "high": ultima.price_high,
+        "low": ultima.price_low, "close": ultima.price_close,
+        "volume": ultima.volume,
+    }}}
+
+
+def _motor_con(fila=None):
+    """Motor REAL con repositorio, broker y auditoría en memoria."""
+    from src.security.kill_switch import BanderaBloqueo, KillSwitchEngine
+    from tests.fakes import (
+        AuditorKillSwitchFalso,
+        BrokerKillSwitchFalso,
+        RepoKillSwitchFalso,
+        estado_kill_switch,
+    )
+
+    repo = RepoKillSwitchFalso()
+    if fila is not None:
+        repo.fila = fila
+    banda = BanderaBloqueo()
+    broker = BrokerKillSwitchFalso()
+    broker.banda = banda
+    auditor = AuditorKillSwitchFalso()
+    motor = KillSwitchEngine(
+        repo, broker, auditor, banda=banda, ahora_ms=lambda: 1
+    )
+    return motor, repo, broker, auditor
+
+
+def _scheduler_con(velas, motor, calculator=None):
+    """Ciclo completo con dobles: lector con la serie, IA y PostgreSQL falsos."""
+    from src.ingestion.engine import IngestionEngine
+    from tests.fakes import ClienteInferenciaFalso, LectorFalso, PrediccionesFalso
+
+    return IngestionScheduler(
+        _engine(_payload_de(velas[-1])),  # type: ignore[arg-type]
+        calculator or _calculator(),
+        lector=LectorFalso(velas),
+        cliente=ClienteInferenciaFalso(),
+        predicciones=PrediccionesFalso(),
+        kill_switch=motor,
+    )
+
+
+def test_run_once_evalua_el_umbral_de_perdida() -> None:
+    # El hook está cableado en el ciclo, después de persistir la vela.
+    from tests.fakes import LectorFalso
+
+    motor, *_ = _motor_con()
+    velas = _sesion_cayendo(-1.4)
+    scheduler = _scheduler_con(velas, motor)
+
+    with patch.object(scheduler, "_evaluar_umbral_de_perdida") as umbral:
+        asyncio.run(scheduler.run_once())
+
+    # La vela que recibe es la que acaba de persistir, la del payload (no la
+    # última de la serie del lector, que es la de la sesión entera).
+    umbral.assert_called_once()
+    assert umbral.call_args.args[0].price_close == velas[-1].price_close
+    assert isinstance(scheduler.lector, LectorFalso)
+
+
+def test_dispara_automaticamente_al_cruzar_el_limite() -> None:
+    from src.utils.mercado import ahora_ny
+
+    motor, repo, broker, auditor = _motor_con()
+    scheduler = _scheduler_con(_sesion_cayendo(-1.4), motor)
+
+    asyncio.run(scheduler.run_once())
+
+    assert repo.fila.activo is True, "la pérdida superó el 1,25 %"
+    assert repo.fila.origen == "AUTOMATICO"
+    assert repo.fila.actor == "SISTEMA"
+    assert broker.liquidaciones == 1
+    # Y la guarda anti-bucle ya no deja volver a disparar hoy.
+    assert motor.puede_disparar_automatico(ahora_ny().date()) is False
+
+    evento = auditor.eventos[-1]
+    assert evento.actor == "SISTEMA"
+    assert evento.ip_address == "127.0.0.1"
+    assert evento.payload is not None
+    assert evento.payload["origen"] == "AUTOMATICO"
+    assert evento.payload["variacion_sesion_pct"] == pytest.approx(-1.4, abs=0.01)
+    assert evento.payload["limite_pct"] == 1.25
+
+
+def test_por_debajo_del_limite_no_dispara() -> None:
+    motor, repo, broker, auditor = _motor_con()
+    scheduler = _scheduler_con(_sesion_cayendo(-1.0), motor)  # −1,00 % > −1,25 %
+
+    asyncio.run(scheduler.run_once())
+
+    assert repo.fila.activo is False
+    assert broker.liquidaciones == 0
+    assert auditor.eventos == []
+
+
+def test_en_el_limite_exacto_si_dispara() -> None:
+    # `is_threshold_breached` es estricto hacia abajo: −1,25 % exacto cuenta.
+    motor, repo, *_ = _motor_con()
+    scheduler = _scheduler_con(_sesion_cayendo(-1.25), motor)
+
+    asyncio.run(scheduler.run_once())
+
+    assert repo.fila.activo is True
+
+
+def test_no_vuelve_a_disparar_si_ya_esta_activo() -> None:
+    from tests.fakes import estado_kill_switch
+
+    motor, repo, broker, *_ = _motor_con(estado_kill_switch(activo=True, motivo="ya"))
+    scheduler = _scheduler_con(_sesion_cayendo(-3.0), motor)
+
+    asyncio.run(scheduler.run_once())
+
+    assert broker.liquidaciones == 0, "no se liquidó dos veces"
+    assert repo.activaciones == 0
+
+
+def test_tras_un_reinicio_no_dispara_en_la_misma_sesion() -> None:
+    from datetime import timedelta
+
+    from src.utils.mercado import ahora_ny
+    from tests.fakes import estado_kill_switch
+
+    hoy = ahora_ny().date()
+    motor, repo, broker, *_ = _motor_con(
+        estado_kill_switch(sesion_reinicio=hoy, reinicio_en=1)
+    )
+    scheduler = _scheduler_con(_sesion_cayendo(-1.4), motor)
+
+    asyncio.run(scheduler.run_once())
+
+    assert repo.fila.activo is False, "hoy ya hubo reinicio: sin nuevo disparo"
+    assert broker.liquidaciones == 0
+    # Al día siguiente, la guarda deja volver a evaluar.
+    assert motor.puede_disparar_automatico(hoy + timedelta(days=1)) is True
+
+
+def test_un_gap_registra_la_perdida_real_en_el_payload() -> None:
+    motor, repo, _broker, auditor = _motor_con()
+    # El detector de gaps y su aviso, REALES: es la regla de RF-203 la que
+    # se comprueba, no un texto de mentira.
+    calculadora = _calculator()
+    calculadora.is_market_gap = AsymmetricCalculator.is_market_gap
+    calculadora.gap_loss_notice = AsymmetricCalculator.gap_loss_notice
+    scheduler = _scheduler_con(_sesion_cayendo(-3.0), motor, calculator=calculadora)
+
+    asyncio.run(scheduler.run_once())
+
+    assert repo.fila.activo is True
+    assert repo.fila.motivo.startswith("Pérdida de sesión")
+    payload = auditor.eventos[-1].payload
+    assert payload is not None
+    assert payload["gap"] is True
+    assert payload["perdida_real_pct"] == pytest.approx(-3.0, abs=0.01)
+    assert payload["diferencia_pp"] == pytest.approx(1.75, abs=0.01)
+    assert "GAP DE MERCADO" in payload["aviso_gap"]
+    assert "RF-203" in payload["aviso_gap"]
+
+
+def test_sin_lector_o_sin_motor_no_tumba_el_ciclo() -> None:
+    motor, *_ = _motor_con()
+    # Sin lector no hay sesión que evaluar: el hook sale sin tocar nada.
+    sin_lector = IngestionScheduler(
+        _engine(_payload()), _calculator(), kill_switch=motor  # type: ignore[arg-type]
+    )
+    asyncio.run(sin_lector.run_once())  # no debe lanzar
+
+    # Sin motor no hay dónde disparar: el ciclo de datos sigue igual.
+    from tests.fakes import LectorFalso
+
+    sin_motor = IngestionScheduler(
+        _engine(_payload()),  # type: ignore[arg-type]
+        _calculator(),
+        lector=LectorFalso(_sesion_cayendo(-3.0)),
+        cliente=Mock(), predicciones=Mock(),
+    )
+    asyncio.run(sin_motor.run_once())  # idem

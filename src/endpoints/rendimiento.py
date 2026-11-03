@@ -18,7 +18,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from src.ai.features import Candle, session_of
+from src.ai.features import Candle, apertura_de_sesion
 from src.ai.prediccion import VELAS_A_CONSULTAR, a_candle
 from src.calculator.asymmetric import AsymmetricCalculator
 from src.database.influx_lectura import LectorVelas
@@ -71,8 +71,12 @@ def rendimiento(estado: EstadoAplicacion = Depends(estado_app)) -> RendimientoSa
     if ultima is None or not serie:
         return _sin_datos("Sin velas registradas en la serie.")
 
-    sesion: list[Candle] = session_of([a_candle(v) for v in serie])[-1]
-    apertura = _a_mas_antigua(serie, sesion)
+    # Una sola función con el disparo automático del Kill-Switch: si el panel
+    # y el motor usaran bases distintas, nadie sabría cuál tiene razón.
+    primera = apertura_de_sesion([a_candle(v) for v in serie])
+    if primera is None:
+        return _sin_datos("Sin velas de la sesión para calcular la apertura.")
+    apertura = _a_mas_antigua(serie, [primera])
     base = apertura.price_open
     if base <= 0:
         return _sin_datos("La apertura de la sesión no es un precio válido.")

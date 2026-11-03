@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import date, datetime
 from typing import Any
+from uuid import uuid4
 
 import numpy as np
 from fastapi.testclient import TestClient
@@ -128,7 +129,11 @@ class PrediccionesFalso:
         if any(f.prediction_time == pred.prediction_time for f in self.filas):
             return None
         fila = PrediccionGuardada(
-            id=f"fake-{len(self.filas) + 1}",
+            # UUID local, igual que el esquema (AGENTS.md §5.2): un id
+            # predecible como "fake-1" no pasaría por el FK real de
+            # `transactions.prediction_id`, y el flujo de órdenes se prueba
+            # con ids que sí lo pasarían.
+            id=str(uuid4()),
             prediction_time=pred.prediction_time,
             trend_prediction=pred.trend_prediction,
             confidence_score=pred.confidence_score,
@@ -474,4 +479,30 @@ class AuditorKillSwitchFalso:
             raise ErrorDeAuditoria("postgres no responde")
         self.eventos.append(evento)
 
+# -- doubles del broker simulado (compartidos con tests/test_flujo_ordenes) --
+
+class TransaccionesFalsas:
+    """Repositorio en memoria con el contrato de `RepositorioTransacciones`."""
+
+    def __init__(self, *, neta: float = 0.0, roto: bool = False) -> None:
+        self.neta = neta
+        self.roto = roto
+        self.guardadas: list[TransaccionNueva] = []
+
+    def _si_roto(self) -> None:
+        if self.roto:
+            raise RuntimeError("postgres no responde")
+
+    def guardar(self, transaccion: TransaccionNueva) -> str:
+        self._si_roto()
+        self.guardadas.append(transaccion)
+        return f"id-{len(self.guardadas)}"
+
+    def cantidad_neta(self) -> float:
+        self._si_roto()
+        return self.neta
+
+    def listar(self, limit: int, offset: int) -> tuple[list[TransaccionGuardada], int]:
+        self._si_roto()
+        return [], 0
 
