@@ -52,6 +52,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, Callable
 
 from src.database.kill_switch import EstadoKillSwitch, RepositorioKillSwitch
@@ -62,11 +63,24 @@ from src.security.auditoria import (
     auditar_sincrono,
 )
 from src.security.auditoria_pendiente import ColaAuditoriaPendiente
+from src.utils.fechas import fecha_hora
 
 logger = logging.getLogger(__name__)
 
 #: `action` del evento de auditoría de un disparo (espejo de SDD §3.1.1).
 ACCION_DISPARO = "KILL_SWITCH_TRIGGERED"
+
+#: `action` del evento de un reinicio autorizado con la clave (RF-503).
+ACCION_REINICIO = "KILL_SWITCH_RESET"
+
+#: Estados de la liquidación en lenguaje llano (AGENTS.md §5.5).
+_EN_LLANO: dict[str, str] = {
+    "NINGUNA": "sin liquidar",
+    "PENDIENTE": "pendiente",
+    "EN_CURSO": "en curso",
+    "COMPLETADA": "completada",
+    "FALLIDA": "fallida",
+}
 
 
 class BanderaBloqueo:
@@ -110,6 +124,24 @@ class BanderaBloqueo:
 
 #: Instancia compartida por todos los módulos de este proceso.
 BLOQUEO = BanderaBloqueo()
+
+
+@dataclass(frozen=True)
+class ResumenKillSwitch:
+    """Vista de una sola lectura para la API: estado + texto llano.
+
+    `activo` puede ser `None`: «no se pudo verificar» es distinto de «no está
+    activo» y quien lo consume no debe traducirlo en operable.
+    """
+
+    activo: bool | None
+    motivo: str | None
+    origen: str | None
+    liquidacion_estado: str
+    liquidaciones: int
+    disparado_en: int | None
+    reinicio_en: int | None
+    detalle: str  #: lenguaje llano para el operador, calculado AQUÍ
 
 
 @dataclass(frozen=True)
@@ -175,6 +207,76 @@ class KillSwitchEngine:
         except Exception as exc:  # noqa: BLE001
             logger.error("No se pudo leer el estado del Kill-Switch: %s", exc)
             return None
+
+    def resumen(self) -> ResumenKillSwitch:
+        """Estado + texto llano para la UI, en una sola lectura.
+
+        Los tres casos se distinguen a propósito: activo, inactivo y **no
+        verificado**. Los textos se calculan aquí, no en la interfaz, para
+        que el panel pinte exactamente lo que el backend decidió.
+        """
+        estado = self.estado()
+        banda = self._banda.activo
+
+        if estado is None:
+            if banda:
+                return ResumenKillSwitch(
+                    activo=True,
+                    motivo="Bloqueo en memoria (la base de datos no responde)",
+                    origen=None,
+                    liquidacion_estado="PENDIENTE",
+                    liquidaciones=0,
+                    disparado_en=None,
+                    reinicio_en=None,
+                    detalle=(
+                        "Kill-Switch ACTIVO en este proceso y sin poder guardarse en "
+                        "la base de datos. No se emitirán órdenes ni sugerencias "
+                        "hasta un reinicio autorizado."
+                    ),
+                )
+            return ResumenKillSwitch(
+                activo=None,
+                motivo=None,
+                origen=None,
+                liquidacion_estado="NINGUNA",
+                liquidaciones=0,
+                disparado_en=None,
+                reinicio_en=None,
+                detalle=(
+                    "No se pudo verificar el estado del Kill-Switch: hasta "
+                    "confirmarlo no se emitirán órdenes ni sugerencias."
+                ),
+            )
+
+        if not (estado.activo or banda):
+            return ResumenKillSwitch(
+                activo=False,
+                motivo=estado.motivo,
+                origen=estado.origen,
+                liquidacion_estado=estado.liquidacion_estado,
+                liquidaciones=estado.liquidaciones,
+                disparado_en=estado.disparado_en or None,
+                reinicio_en=estado.reinicio_en,
+                detalle="Sin bloqueo: el Kill-Switch está desactivado.",
+            )
+
+        liquidacion = _EN_LLANO.get(estado.liquidacion_estado, estado.liquidacion_estado)
+        detalle = (
+            f"Kill-Switch ACTIVO desde {fecha_hora(estado.disparado_en)}: "
+            f"{estado.motivo}. Liquidación {liquidacion} "
+            f"({estado.liquidaciones} registrada(s)). "
+            "No se emitirán órdenes ni sugerencias hasta un reinicio autorizado."
+        )
+        return ResumenKillSwitch(
+            activo=True,
+            motivo=estado.motivo,
+            origen=estado.origen,
+            liquidacion_estado=estado.liquidacion_estado,
+            liquidaciones=estado.liquidaciones,
+            disparado_en=estado.disparado_en or None,
+            reinicio_en=estado.reinicio_en,
+            detalle=detalle,
+        )
 
     # -- disparo -----------------------------------------------------------
 
@@ -300,6 +402,43 @@ class KillSwitchEngine:
         except Exception as exc:  # noqa: BLE001
             logger.error("No se pudo marcar la liquidación como %s: %s", estado, exc)
             return False
+
+    # -- reinicio autorizado (RF-503) --------------------------------------
+
+    def registrar_intento_fallido(self, ahora_ms: int) -> int | None:
+        """+1 al contador de intentos de la clave. None si no estaba activo."""
+        try:
+            return self._repo.registrar_intento_fallido(ahora_ms)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("No se pudo registrar el intento de reinicio: %s", exc)
+            return None
+
+    def reiniciar(
+        self, *, actor: str, ip_address: str, ahora_ms: int, sesion: date
+    ) -> bool:
+        """Reinicio autorizado (RF-503). **Auditoría estricta antes de la acción.**
+
+        A diferencia del disparo, aquí sí gana la regla 3 del SDD §7: quien no
+        puede registrar el reinicio no puede autorizarlo, y la excepción sube
+        al caller (el endpoint contesta 503 y el sistema sigue bloqueado).
+
+        `True` si esta llamada fue la que desactivó (idempotente).
+        """
+        evento = EventoAuditoria(
+            action=ACCION_REINICIO,
+            actor=actor,
+            ip_address=ip_address,
+            payload={"fase": "solicitud", "sesion": sesion.isoformat()},
+            timestamp_ms=ahora_ms,
+        )
+        auditar_sincrono(self._auditor, evento)
+        desactivado = self._repo.reiniciar(ahora_ms=ahora_ms, sesion=sesion)
+        if desactivado:
+            # La bandera del proceso se quita solo después de que la base
+            # confirmó: liberar antes dejaría la UI en «operable» con la fila
+            # todavía activa.
+            self._banda.liberar()
+        return desactivado
 
     # -- recuperación ------------------------------------------------------
 

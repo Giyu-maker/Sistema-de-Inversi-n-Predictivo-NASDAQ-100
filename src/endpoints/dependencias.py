@@ -30,16 +30,22 @@ from src.database.configuraciones import (
     configuracion_por_defecto,
 )
 from src.database.influx_lectura import LectorInflux, LectorVelas
+from src.database.kill_switch import KillSwitchPostgres
 from src.database.predictions import (
     PrediccionGuardada,
     PrediccionesPostgres,
     RepositorioPredicciones,
 )
+from src.database.transacciones import TransaccionesPostgres
 from src.endpoints.esquemas import (
     AciertoDireccionalSalida,
     CalidadModeloSalida,
     IaSalida,
 )
+from src.integration.broker import SimulatedBrokerGateway
+from src.security.auditoria import AuditoriaPostgres
+from src.security.auditoria_pendiente import ColaAuditoriaPendiente
+from src.security.kill_switch import KillSwitchEngine
 from src.security.perfiles import (
     Senal,
     evaluar_senal,
@@ -106,6 +112,11 @@ class EstadoAplicacion:
     banda_stable_pct: float = 0.1
     cache_ia_s: float = 5.0
     cache_calidad_s: float = 60.0
+    #: Motor del Kill-Switch. `None` = «no está configurado en este proceso»
+    #: (los tests lo inyectan con un doble; en producción lo construye
+    #: `estado_desde_entorno`). `None` NO significa «desactivado»: quien lo
+    #: consume debe tratarlo como estado no verificado.
+    motor_kill_switch: KillSwitchEngine | None = None
     cache_ia: Cache = field(init=False)
     cache_calidad: Cache = field(init=False)
 
@@ -152,8 +163,9 @@ def estado_desde_entorno() -> EstadoAplicacion:
         logger.warning("API sin servicio de inferencia: %s", exc)
         cliente_ia = None
 
+    lector = LectorInflux(influx)
     return EstadoAplicacion(
-        lector=LectorInflux(influx),
+        lector=lector,
         predicciones=PrediccionesPostgres(),
         configuraciones=ConfiguracionesPostgres(),
         cliente_ia=cliente_ia,
@@ -163,7 +175,46 @@ def estado_desde_entorno() -> EstadoAplicacion:
         banda_stable_pct=float(os.environ.get("BANDA_STABLE_PCT", "0.1")),
         cache_ia_s=float(os.environ.get("CACHE_IA_S", "5")),
         cache_calidad_s=float(os.environ.get("CACHE_CALIDAD_S", "60")),
+        motor_kill_switch=motor_kill_switch(lector),
     )
+
+
+def motor_kill_switch(lector: LectorVelas) -> KillSwitchEngine:
+    """Motor real del Kill-Switch (RF-501) y su preparación al arrancar.
+
+    * **Precio**: del mismo lector que el resto del panel. Si no hay velas,
+      la liquidación falla en lugar de inventar un número.
+    * **Preparación**: siembra la fila si no existe y vuelca/repara lo que
+      haya quedado pendiente (`KillSwitchEngine.recuperar`). Todo en el mejor
+      esfuerzo: un fallo de PostgreSQL aquí no puede impedir que el API
+      arranque —el propio estado lo dirá como «no verificado»—.
+    """
+    def precio_actual(_simbolo: str) -> float:
+        vela = lector.ultima_vela()
+        if vela is None:
+            raise RuntimeError("no hay velas de precio para liquidar")
+        return vela.price_close
+
+    repo = KillSwitchPostgres()
+    motor = KillSwitchEngine(
+        repo=repo,
+        broker=SimulatedBrokerGateway(
+            TransaccionesPostgres(),
+            precio_actual=precio_actual,
+            simbolo=os.environ.get("SIMBOLO", "QQQ"),
+        ),
+        auditor=AuditoriaPostgres(),
+        cola=ColaAuditoriaPendiente(os.environ.get("AUDITORIA_PENDIENTE_RUTA") or None),
+    )
+    try:
+        if repo.sembrar_si_vacio():
+            logger.info("Estado inicial del Kill-Switch sembrado: desactivado.")
+        pendientes = motor.recuperar()
+        if pendientes:
+            logger.warning("Auditoría pendiente volcada al arrancar: %d evento(s).", pendientes)
+    except Exception as exc:  # noqa: BLE001 — el API no puede dejar de arrancar
+        logger.error("No se pudo preparar el estado del Kill-Switch: %s", exc)
+    return motor
 
 
 def consultar_ia(estado: EstadoAplicacion) -> IaSalida:

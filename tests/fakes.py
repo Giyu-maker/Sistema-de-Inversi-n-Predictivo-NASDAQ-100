@@ -11,6 +11,7 @@ herméticos, igual que los del Sprint 2.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime
 from typing import Any
 
@@ -23,10 +24,13 @@ from src.database.configuraciones import (
     ConfiguracionSistema,
     configuracion_por_defecto,
 )
+from src.database.kill_switch import EstadoKillSwitch
 from src.database.predictions import PrediccionGuardada, PrediccionNueva
 from src.endpoints.app import crear_app
 from src.endpoints.dependencias import EstadoAplicacion
 from src.ingestion.engine import NasdaqCandle
+from src.security.auditoria import ErrorDeAuditoria, EventoAuditoria
+from src.security.kill_switch import KillSwitchEngine, ResumenKillSwitch
 from src.utils.fechas import ZONA_COLOMBIA
 
 #: Vela de 5 minutos (RF-101) en epoch ms.
@@ -244,6 +248,58 @@ CUERPO_MODELO_EJEMPLO: dict[str, Any] = {
 }
 
 
+class MotorKillSwitchFalso:
+    """`resumen()` y `esta_bloqueado()` del motor, sin base de datos.
+
+    Por defecto dice «no bloqueado», que es lo que espera un sistema sano: un
+    test que quiera probar el bloqueo pasa su propio motor (o el real, con
+    dobles de repositorio, como hace `tests/test_endpoints_kill_switch.py`).
+    """
+
+    def __init__(self, activo: bool | None = False, detalle: str | None = None) -> None:
+        self._activo = activo
+        self._detalle = detalle
+        self.disparos = 0
+        self.reinicios = 0
+        self.intentos = 0
+
+    def resumen(self) -> ResumenKillSwitch:
+        if self._activo is None:
+            detalle = self._detalle or (
+                "No se pudo verificar el estado del Kill-Switch: hasta "
+                "confirmarlo no se emitirán órdenes ni sugerencias."
+            )
+            return ResumenKillSwitch(
+                activo=None, motivo=None, origen=None,
+                liquidacion_estado="NINGUNA", liquidaciones=0,
+                disparado_en=None, reinicio_en=None, detalle=detalle,
+            )
+        if self._activo:
+            detalle = self._detalle or (
+                "Kill-Switch ACTIVO desde 03/11/2026 09:00:00: prueba. "
+                "Liquidación completada (1 registrada(s)). No se emitirán "
+                "órdenes ni sugerencias hasta un reinicio autorizado."
+            )
+            return ResumenKillSwitch(
+                activo=True, motivo="prueba", origen="MANUAL",
+                liquidacion_estado="COMPLETADA", liquidaciones=1,
+                disparado_en=1_800_000_000_000, reinicio_en=None, detalle=detalle,
+            )
+        return ResumenKillSwitch(
+            activo=False, motivo="Sin disparo", origen="MANUAL",
+            liquidacion_estado="NINGUNA", liquidaciones=0,
+            disparado_en=None, reinicio_en=None,
+            detalle=self._detalle or "Sin bloqueo: el Kill-Switch está desactivado.",
+        )
+
+    def esta_bloqueado(self) -> bool | None:
+        return self._activo
+
+    def execute_global_liquidation(self, **_kwargs: Any):
+        self.disparos += 1
+        raise AssertionError("los tests de estado no deben disparar el Kill-Switch")
+
+
 def estado_de_prueba(
     *,
     velas: list[NasdaqCandle] | None = None,
@@ -251,6 +307,7 @@ def estado_de_prueba(
     predicciones: PrediccionesFalso | None = None,
     configuraciones: ConfiguracionesFalso | None = None,
     cliente_ia: ClienteIaFalso | None = None,
+    motor: MotorKillSwitchFalso | KillSwitchEngine | None = None,
     ahora: datetime = AHORA_EN_SESION,
     feriados: frozenset[date] = frozenset(),
     banda_stable_pct: float = 0.1,
@@ -263,6 +320,7 @@ def estado_de_prueba(
             configuraciones if configuraciones is not None else ConfiguracionesFalso()
         ),
         cliente_ia=cliente_ia if cliente_ia is not None else ClienteIaFalso(),
+        motor_kill_switch=motor if motor is not None else MotorKillSwitchFalso(),
         ahora=lambda: ahora,
         feriados=feriados,
         banda_stable_pct=banda_stable_pct,
@@ -282,3 +340,138 @@ def ventana_np(n: int = 12) -> np.ndarray:
     from src.ai.features import N_FEATURES
 
     return np.zeros((n, N_FEATURES), dtype=np.float64)
+
+
+# -- doubles del Kill-Switch (compartidos con tests/test_endpoints_kill_switch) ---
+
+def estado_kill_switch(**cambios) -> EstadoKillSwitch:
+    """Fila de `kill_switch_state` con valores por defecto editables."""
+    valores: dict = dict(
+        activo=False, motivo="Sin disparo", origen="MANUAL", actor="SISTEMA",
+        disparado_en=0, liquidacion_estado="NINGUNA", liquidacion_en=None,
+        liquidaciones=0, reinicio_en=None, sesion_reinicio=None,
+        intentos_reinicio=0, ultimo_intento_en=0,
+    )
+    valores.update(cambios)
+    return EstadoKillSwitch(**valores)
+
+
+class RepoKillSwitchFalso:
+    """Repositorio en memoria con el mismo contrato que `KillSwitchPostgres`."""
+
+    def __init__(self, *, con_fila: bool = True, roto: bool = False) -> None:
+        self.con_fila = con_fila
+        self.roto = roto
+        self.fila = estado_kill_switch()
+        self.activaciones = 0
+        self.marcas: list[tuple[str, int | None]] = []
+        self.reinicio_hizo = False
+        self.llamadas: list[str] = []
+
+    def _si_roto(self) -> None:
+        if self.roto:
+            raise RuntimeError("postgres no responde")
+
+    def sembrar_si_vacio(self) -> bool:
+        self._si_roto()
+        return False
+
+    def leer(self) -> EstadoKillSwitch | None:
+        self.llamadas.append("leer")
+        self._si_roto()
+        return self.fila if self.con_fila else None
+
+    def activar(self, *, motivo: str, origen: str, actor: str, ahora_ms: int) -> bool:
+        self.llamadas.append("activar")
+        self._si_roto()
+        if self.fila.activo:
+            return False  # compare-and-set: solo gana quien pasa de FALSE a TRUE
+        self.fila = estado_kill_switch(
+            activo=True, motivo=motivo, origen=origen, actor=actor,
+            disparado_en=ahora_ms, liquidacion_estado="PENDIENTE",
+        )
+        self.activaciones += 1
+        return True
+
+    def marcar_liquidacion(self, estado_: str, ahora_ms: int | None) -> None:
+        self.llamadas.append(f"marcar:{estado_}")
+        self._si_roto()
+        self.marcas.append((estado_, ahora_ms))
+        if estado_ == "COMPLETADA":
+            self.fila = estado_kill_switch(
+                activo=True, motivo=self.fila.motivo, origen=self.fila.origen,
+                actor=self.fila.actor, disparado_en=self.fila.disparado_en,
+                liquidacion_estado="COMPLETADA", liquidacion_en=ahora_ms,
+                liquidaciones=self.fila.liquidaciones + 1,
+            )
+
+    def registrar_intento_fallido(self, ahora_ms: int) -> int | None:
+        """+1 real: sin esto no se puede probar el límite de intentos."""
+        self._si_roto()
+        self.llamadas.append("intento")
+        if not self.fila.activo:
+            return None
+        self.fila = replace(
+            self.fila,
+            intentos_reinicio=self.fila.intentos_reinicio + 1,
+            ultimo_intento_en=ahora_ms,
+        )
+        return self.fila.intentos_reinicio
+
+    def reiniciar(self, *, ahora_ms: int, sesion: date) -> bool:
+        self.llamadas.append("reiniciar")
+        self._si_roto()
+        if not self.fila.activo:
+            return False
+        self.fila = estado_kill_switch(
+            reinicio_en=ahora_ms, sesion_reinicio=sesion,
+            liquidaciones=self.fila.liquidaciones,
+        )
+        self.reinicio_hizo = True
+        return True
+
+
+class BrokerKillSwitchFalso:
+    """Gateway que registra llamadas y puede fallar a voluntad."""
+
+    def __init__(self, *, roto: bool = False, ordenes: int = 1) -> None:
+        self.roto = roto
+        self._ordenes = ordenes
+        self.liquidaciones = 0
+        self.bloqueo_puesto_al_liquidar: bool | None = None
+        self.banda: BanderaBloqueo | None = None
+
+    def posiciones_abiertas(self):
+        return []
+
+    def enviar_orden(self, orden):
+        raise AssertionError("el motor no debe emitir órdenes sueltas")
+
+    def liquidar_todo(self) -> list:
+        # Prueba el orden (a) → (c): la bandera ya debe estar puesta aquí.
+        if self.banda is not None:
+            self.bloqueo_puesto_al_liquidar = self.banda.activo
+        if self.roto:
+            raise RuntimeError("el broker no responde")
+        self.liquidaciones += 1
+        return [object() for _ in range(self._ordenes)]
+
+
+class AuditorKillSwitchFalso:
+    """Repositorio de auditoría que cumple el contrato de producción.
+
+    Cuando `roto` lanza `ErrorDeAuditoria`, igual que `AuditoriaPostgres`: es
+    lo que permite probar por aquí la lectura estricta del reinicio (sin
+    auditoría no hay acción) a través del manejador real de `errores.py`.
+    """
+
+    def __init__(self, *, roto: bool = False) -> None:
+        self.roto = roto
+        self.eventos: list[EventoAuditoria] = []
+
+    def registrar(self, evento: EventoAuditoria) -> None:
+        if self.roto:
+            raise ErrorDeAuditoria("postgres no responde")
+        self.eventos.append(evento)
+
+

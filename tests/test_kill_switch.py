@@ -14,7 +14,13 @@ from pathlib import Path
 
 import pytest
 
-from src.database.kill_switch import EstadoKillSwitch
+from tests.fakes import (
+    AuditorKillSwitchFalso,
+    BrokerKillSwitchFalso,
+    RepoKillSwitchFalso,
+    estado_kill_switch,
+)
+
 from src.security.auditoria import EventoAuditoria
 from src.security.auditoria_pendiente import ColaAuditoriaPendiente
 from src.security.kill_switch import (
@@ -27,132 +33,17 @@ from src.security.kill_switch import (
 SESION = date(2026, 11, 3)
 
 
-def estado(**cambios) -> EstadoKillSwitch:
-    """Fila de `kill_switch_state` con valores por defecto editables."""
-    valores: dict = dict(
-        activo=False, motivo="Sin disparo", origen="MANUAL", actor="SISTEMA",
-        disparado_en=0, liquidacion_estado="NINGUNA", liquidacion_en=None,
-        liquidaciones=0, reinicio_en=None, sesion_reinicio=None,
-        intentos_reinicio=0, ultimo_intento_en=0,
-    )
-    valores.update(cambios)
-    return EstadoKillSwitch(**valores)
-
-
-class RepoFalso:
-    """Repositorio en memoria con el mismo contrato que `KillSwitchPostgres`."""
-
-    def __init__(self, *, con_fila: bool = True, roto: bool = False) -> None:
-        self.con_fila = con_fila
-        self.roto = roto
-        self.fila = estado()
-        self.activaciones = 0
-        self.marcas: list[tuple[str, int | None]] = []
-        self.reinicio_hizo = False
-        self.llamadas: list[str] = []
-
-    def _si_roto(self) -> None:
-        if self.roto:
-            raise RuntimeError("postgres no responde")
-
-    def sembrar_si_vacio(self) -> bool:
-        self._si_roto()
-        return False
-
-    def leer(self) -> EstadoKillSwitch | None:
-        self.llamadas.append("leer")
-        self._si_roto()
-        return self.fila if self.con_fila else None
-
-    def activar(self, *, motivo: str, origen: str, actor: str, ahora_ms: int) -> bool:
-        self.llamadas.append("activar")
-        self._si_roto()
-        if self.fila.activo:
-            return False  # compare-and-set: solo gana quien pasa de FALSE a TRUE
-        self.fila = estado(
-            activo=True, motivo=motivo, origen=origen, actor=actor,
-            disparado_en=ahora_ms, liquidacion_estado="PENDIENTE",
-        )
-        self.activaciones += 1
-        return True
-
-    def marcar_liquidacion(self, estado_: str, ahora_ms: int | None) -> None:
-        self.llamadas.append(f"marcar:{estado_}")
-        self._si_roto()
-        self.marcas.append((estado_, ahora_ms))
-        if estado_ == "COMPLETADA":
-            self.fila = estado(
-                activo=True, motivo=self.fila.motivo, origen=self.fila.origen,
-                actor=self.fila.actor, disparado_en=self.fila.disparado_en,
-                liquidacion_estado="COMPLETADA", liquidacion_en=ahora_ms,
-                liquidaciones=self.fila.liquidaciones + 1,
-            )
-
-    def registrar_intento_fallido(self, ahora_ms: int) -> int | None:
-        self._si_roto()
-        return None
-
-    def reiniciar(self, *, ahora_ms: int, sesion: date) -> bool:
-        self.llamadas.append("reiniciar")
-        self._si_roto()
-        if not self.fila.activo:
-            return False
-        self.fila = estado(
-            reinicio_en=ahora_ms, sesion_reinicio=sesion,
-            liquidaciones=self.fila.liquidaciones,
-        )
-        self.reinicio_hizo = True
-        return True
-
-
-class BrokerFalso:
-    """Gateway que registra llamadas y puede fallar a voluntad."""
-
-    def __init__(self, *, roto: bool = False, ordenes: int = 1) -> None:
-        self.roto = roto
-        self._ordenes = ordenes
-        self.liquidaciones = 0
-        self.bloqueo_puesto_al_liquidar: bool | None = None
-        self.banda: BanderaBloqueo | None = None
-
-    def posiciones_abiertas(self):
-        return []
-
-    def enviar_orden(self, orden):
-        raise AssertionError("el motor no debe emitir órdenes sueltas")
-
-    def liquidar_todo(self) -> list:
-        # Prueba el orden (a) → (c): la bandera ya debe estar puesta aquí.
-        if self.banda is not None:
-            self.bloqueo_puesto_al_liquidar = self.banda.activo
-        if self.roto:
-            raise RuntimeError("el broker no responde")
-        self.liquidaciones += 1
-        return [object() for _ in range(self._ordenes)]
-
-
-class AuditorFalso:
-    def __init__(self, *, roto: bool = False) -> None:
-        self.roto = roto
-        self.eventos: list[EventoAuditoria] = []
-
-    def registrar(self, evento: EventoAuditoria) -> None:
-        if self.roto:
-            raise RuntimeError("postgres no responde")
-        self.eventos.append(evento)
-
-
 def motor(
-    repo: RepoFalso | None = None,
-    broker: BrokerFalso | None = None,
-    auditor: AuditorFalso | None = None,
+    repo: RepoKillSwitchFalso | None = None,
+    broker: BrokerKillSwitchFalso | None = None,
+    auditor: AuditorKillSwitchFalso | None = None,
     *,
     banda: BanderaBloqueo | None = None,
     cola: ColaAuditoriaPendiente | None = None,
-) -> tuple[KillSwitchEngine, RepoFalso, BrokerFalso, AuditorFalso]:
-    repo = repo if repo is not None else RepoFalso()
-    broker = broker if broker is not None else BrokerFalso()
-    auditor = auditor if auditor is not None else AuditorFalso()
+) -> tuple[KillSwitchEngine, RepoKillSwitchFalso, BrokerKillSwitchFalso, AuditorKillSwitchFalso]:
+    repo = repo if repo is not None else RepoKillSwitchFalso()
+    broker = broker if broker is not None else BrokerKillSwitchFalso()
+    auditor = auditor if auditor is not None else AuditorKillSwitchFalso()
     banda = banda if banda is not None else BanderaBloqueo()
     broker.banda = banda
     return (
@@ -198,7 +89,7 @@ class TestBanderaBloqueo:
             h.join()
         assert ganadores.count(True) == 1, "solo un hilo puede haber activado"
 
-    def test_las_instancias_no_comparten_estado(self) -> None:
+    def test_las_instancias_no_comparten_estado_kill_switch(self) -> None:
         # El singleton del módulo es para producción; los tests usan el suyo.
         propia = BanderaBloqueo()
         propia.activar()
@@ -209,12 +100,12 @@ class TestBanderaBloqueo:
 class TestDisparo:
     def test_el_bloqueo_se_pone_antes_de_todo_lo_demas(self) -> None:
         banda = BanderaBloqueo()
-        repo = RepoFalso()
-        broker = BrokerFalso()
+        repo = RepoKillSwitchFalso()
+        broker = BrokerKillSwitchFalso()
         # Si la bandera no estuviera puesta al liquidar, esto queda en None.
         broker.banda = banda
         motor_ = KillSwitchEngine(
-            repo, broker, AuditorFalso(), banda=banda, ahora_ms=lambda: 1
+            repo, broker, AuditorKillSwitchFalso(), banda=banda, ahora_ms=lambda: 1
         )
 
         resultado = motor_.execute_global_liquidation(
@@ -233,9 +124,9 @@ class TestDisparo:
         # RNF-010: nada de I/O antes de la bandera. El repo registra sus
         # llamadas; la primera no puede ser una lectura previa al bloqueo.
         banda = BanderaBloqueo()
-        repo = RepoFalso()
+        repo = RepoKillSwitchFalso()
         motor_ = KillSwitchEngine(
-            repo, BrokerFalso(), AuditorFalso(), banda=banda, ahora_ms=lambda: 1
+            repo, BrokerKillSwitchFalso(), AuditorKillSwitchFalso(), banda=banda, ahora_ms=lambda: 1
         )
         motor_.execute_global_liquidation(
             motivo="x", origen="MANUAL", actor="OPERADOR", ip_address="127.0.0.1"
@@ -243,7 +134,7 @@ class TestDisparo:
         assert repo.llamadas[0] == "activar", repo.llamadas
 
     def test_segunda_pulsacion_no_liquid_dos_veces(self) -> None:
-        repo, broker = RepoFalso(), BrokerFalso()
+        repo, broker = RepoKillSwitchFalso(), BrokerKillSwitchFalso()
         motor_, repo, broker, _ = motor(repo, broker)
 
         primera = motor_.execute_global_liquidation(
@@ -269,7 +160,7 @@ class TestDisparo:
 
     def test_liquidacion_falla_pero_el_bloqueo_queda(self) -> None:
         banda = BanderaBloqueo()
-        motor_, repo, broker, _ = motor(broker=BrokerFalso(roto=True), banda=banda)
+        motor_, repo, broker, _ = motor(broker=BrokerKillSwitchFalso(roto=True), banda=banda)
 
         resultado = motor_.execute_global_liquidation(
             motivo="a", origen="MANUAL", actor="OPERADOR", ip_address="10.0.0.7"
@@ -282,7 +173,7 @@ class TestDisparo:
 
     def test_sin_posiciones_igual_se_registra_completada(self) -> None:
         # RF-503: el bloqueo vale aunque no haya nada que vender.
-        motor_, repo, broker, _ = motor(broker=BrokerFalso(ordenes=0))
+        motor_, repo, broker, _ = motor(broker=BrokerKillSwitchFalso(ordenes=0))
         resultado = motor_.execute_global_liquidation(
             motivo="umbral", origen="AUTOMATICO", actor="SISTEMA", ip_address="127.0.0.1"
         )
@@ -295,7 +186,7 @@ class TestNoDependeDeLaBase:
     def test_postgres_caido_no_impide_bloquear_ni_liquidar(self) -> None:
         banda = BanderaBloqueo()
         motor_, _, broker, _ = motor(
-            repo=RepoFalso(roto=True), broker=BrokerFalso(), banda=banda
+            repo=RepoKillSwitchFalso(roto=True), broker=BrokerKillSwitchFalso(), banda=banda
         )
 
         resultado = motor_.execute_global_liquidation(
@@ -309,7 +200,7 @@ class TestNoDependeDeLaBase:
 
     def test_postgres_caido_tambien_es_idempotente_en_el_proceso(self) -> None:
         banda = BanderaBloqueo()
-        motor_, _, broker, _ = motor(repo=RepoFalso(roto=True), banda=banda)
+        motor_, _, broker, _ = motor(repo=RepoKillSwitchFalso(roto=True), banda=banda)
         motor_.execute_global_liquidation(
             motivo="a", origen="MANUAL", actor="OPERADOR", ip_address="10.0.0.7"
         )
@@ -321,10 +212,10 @@ class TestNoDependeDeLaBase:
 
     def test_el_estado_inconocible_es_none_y_no_falso(self) -> None:
         # «No lo sé» no es «no bloqueado»: quien llama no emite órdenes.
-        motor_, _, _, _ = motor(repo=RepoFalso(roto=True))
+        motor_, _, _, _ = motor(repo=RepoKillSwitchFalso(roto=True))
         assert motor_.esta_bloqueado() is None
 
-        motor2, _, _, _ = motor(repo=RepoFalso(con_fila=False))
+        motor2, _, _, _ = motor(repo=RepoKillSwitchFalso(con_fila=False))
         assert motor2.esta_bloqueado() is None
 
     def test_el_estado_se_lee_cuando_todo_va(self) -> None:
@@ -341,7 +232,7 @@ class TestNoDependeDeLaBase:
 class TestAuditoriaMejorEsfuerzo:
     def test_si_la_auditoria_falla_el_evento_queda_en_el_archivo(self, tmp_path: Path) -> None:
         cola = ColaAuditoriaPendiente(tmp_path / "pendiente.jsonl")
-        motor_, _, _, auditor = motor(auditor=AuditorFalso(roto=True), cola=cola)
+        motor_, _, _, auditor = motor(auditor=AuditorKillSwitchFalso(roto=True), cola=cola)
 
         resultado = motor_.execute_global_liquidation(
             motivo="a", origen="MANUAL", actor="OPERADOR", ip_address="10.0.0.7"
@@ -359,7 +250,7 @@ class TestAuditoriaMejorEsfuerzo:
     def test_si_ambas_fallan_el_evento_tambien_queda(self, tmp_path: Path) -> None:
         cola = ColaAuditoriaPendiente(tmp_path / "pendiente.jsonl")
         motor_, _, _, _ = motor(
-            repo=RepoFalso(roto=True), auditor=AuditorFalso(roto=True), cola=cola
+            repo=RepoKillSwitchFalso(roto=True), auditor=AuditorKillSwitchFalso(roto=True), cola=cola
         )
 
         motor_.execute_global_liquidation(
@@ -397,7 +288,7 @@ class TestRecuperacion:
         return cola
 
     def test_repara_un_bloqueo_que_no_llego_a_la_base(self, tmp_path: Path) -> None:
-        repo = RepoFalso()  # fila inactiva: así quedó tras el fallo
+        repo = RepoKillSwitchFalso()  # fila inactiva: así quedó tras el fallo
         motor_, repo, _, auditor = motor(repo=repo, cola=self._cola_con_disparo(tmp_path))
 
         volcadas = motor_.recuperar()
@@ -409,8 +300,8 @@ class TestRecuperacion:
         assert motor_.recuperar() == 0, "segunda corrida: ya no hay nada"
 
     def test_no_repara_si_el_estado_ya_esta_activo(self, tmp_path: Path) -> None:
-        repo = RepoFalso()
-        repo.fila = estado(activo=True, motivo="ya")
+        repo = RepoKillSwitchFalso()
+        repo.fila = estado_kill_switch(activo=True, motivo="ya")
         motor_, repo, _, _ = motor(repo=repo, cola=self._cola_con_disparo(tmp_path))
 
         motor_.recuperar()
@@ -418,7 +309,7 @@ class TestRecuperacion:
         assert repo.activaciones == 0, "no se vuelve a activar"
 
     def test_sin_pendientes_no_toca_la_base(self, tmp_path: Path) -> None:
-        repo = RepoFalso(roto=True)  # si lo tocara, explotaría
+        repo = RepoKillSwitchFalso(roto=True)  # si lo tocara, explotaría
         motor_, _, _, _ = motor(repo=repo, cola=ColaAuditoriaPendiente(tmp_path / "x.jsonl"))
         assert motor_.recuperar() == 0
 
@@ -429,7 +320,7 @@ class TestRecuperacion:
                             ip_address="10.0.0.7", payload={}),
             "fallo",
         )
-        repo = RepoFalso()
+        repo = RepoKillSwitchFalso()
         motor_, repo, _, auditor = motor(repo=repo, cola=cola)
 
         motor_.recuperar()
@@ -651,3 +542,33 @@ class TestEnBaseReal:
         assert estado.origen in ("MANUAL", "AUTOMATICO")
         assert estado.actor in ("SISTEMA", "OPERADOR")
         self._inactivar(repo_real)
+
+
+class TestMotorReal:
+    """`dependencias.motor_kill_switch` contra PostgreSQL de verdad.
+
+    Es el cable que usa el API al arrancar: si el motor no se puede montar,
+    la siembra falla o `resumen()` no responde, el panel no tendría estado
+    del Kill-Switch. Solo lectura salvo la siembra idempotente, que es
+    exactamente lo que hace el arranque en producción.
+    """
+
+    def test_se_monta_siembra_y_responde(self, repo_real) -> None:
+        from src.endpoints.dependencias import motor_kill_switch
+        from tests.fakes import LectorFalso
+
+        _cargar_env()
+        motor = motor_kill_switch(LectorFalso())
+        resumen = motor.resumen()
+
+        assert resumen.activo in (True, False, None)
+        assert resumen.detalle.strip(), "el texto llano no puede quedar vacío"
+        assert motor.esta_bloqueado() == resumen.activo
+
+    def test_la_siembra_no_duplica_la_fila(self, repo_real) -> None:
+        from src.endpoints.dependencias import motor_kill_switch
+        from tests.fakes import LectorFalso
+
+        _cargar_env()
+        motor_kill_switch(LectorFalso())
+        assert motor_kill_switch(LectorFalso()).estado() is not None

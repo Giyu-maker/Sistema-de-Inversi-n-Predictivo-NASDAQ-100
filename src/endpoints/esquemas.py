@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-ESTADOS_SISTEMA = ("VERDE", "AMARILLO", "CERRADO")
+ESTADOS_SISTEMA = ("VERDE", "AMARILLO", "CERRADO", "ROJO")
 ESTADOS_RESULTADO = ("DISPONIBLE", "PENDIENTE", "NO_APLICA")
 
 
@@ -114,6 +114,44 @@ class PerfilSalida(_Salida):
     por_defecto: bool
 
 
+class KillSwitchSalida(_Salida):
+    """Estado del Kill-Switch. `activo` puede ser `None`: «no verificado».
+
+    `detalle` y `motivo` los calcula el backend (`KillSwitchEngine.resumen`):
+    la interfaz solo los pinta, nunca redacta.
+    """
+
+    #: None = no se pudo verificar (no es «desactivado»).
+    activo: bool | None
+    detalle: str
+    motivo: str | None = None
+    origen: str | None = None
+    liquidacion_estado: str = "NINGUNA"
+    liquidaciones: int = 0
+    disparado_en: int | None = None
+    reinicio_en: int | None = None
+
+
+class DisparoSalida(KillSwitchSalida):
+    """Respuesta de `POST /api/kill-switch`: estado + métricas del disparo."""
+
+    #: False si ya estaba activo (idempotencia: no se liquidó dos veces).
+    primera_vez: bool
+    ms_bloqueo: float
+    ms_liquidacion: float
+    ordenes_simuladas: int
+    persistencia_ok: bool
+    auditoria_ok: bool
+
+
+class ReinicioSalida(_Salida):
+    """Respuesta de `POST /api/kill-switch/reset`."""
+
+    reiniciado: bool
+    detalle: str
+    intentos_reinicio: int = 0
+
+
 class EstadoSistemaSalida(_Salida):
     estado: str
     motivo: str
@@ -125,6 +163,7 @@ class EstadoSistemaSalida(_Salida):
     perfil: PerfilSalida
     ultima_prediccion: PrediccionSalida | None
     senal: SenalSalida | None
+    kill_switch: KillSwitchSalida
     avisos: list[str]
 
 

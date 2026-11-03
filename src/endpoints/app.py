@@ -12,19 +12,28 @@ import logging
 
 from fastapi import FastAPI
 
-from src.endpoints import calidad, estado, predicciones, rendimiento, salud, velas
+from src.endpoints import (
+    calidad,
+    estado,
+    kill_switch,
+    predicciones,
+    rendimiento,
+    salud,
+    velas,
+)
 from src.endpoints.dependencias import EstadoAplicacion
 from src.endpoints.errores import instalar_manejadores
 
 logger = logging.getLogger(__name__)
 
-TITULO = "RiTech — API de solo lectura (M2)"
+TITULO = "RiTech — API de M2"
 VERSION = "0.1.0"
 DESCRIPCION = (
     "Consulta de estado, velas, rendimiento virtual y predicciones del sistema "
-    "predictivo NASDAQ-100 (Sprint 3, Fase B). SOLO GET: no escribe en ninguna "
-    "base de datos ni envía órdenes. Sin autenticación en esta fase "
-    "(RNF-001/RNF-005 → Sprint 4)."
+    "predictivo NASDAQ-100 (Sprint 3 Fase B) más el Kill-Switch del Sprint 4. "
+    "Las rutas GET siguen abiertas sin autenticación; las escrituras son el "
+    "Kill-Switch —disparo sin clave (RF-501) y reinicio con clave de reinicio "
+    "— y quedan auditadas con IP. Brecha de autenticación y roles: CR-006."
 )
 
 
@@ -37,7 +46,7 @@ def crear_app(estado_inicial: EstadoAplicacion | None = None) -> FastAPI:
     """
     app = FastAPI(title=TITULO, version=VERSION, description=DESCRIPCION)
     instalar_manejadores(app)
-    for paquete in (salud, estado, velas, predicciones, rendimiento, calidad):
+    for paquete in (salud, estado, velas, predicciones, rendimiento, calidad, kill_switch):
         app.include_router(paquete.router)
     # None = "construir desde el entorno al primer request" (ver estado_app).
     app.state.riTech = estado_inicial

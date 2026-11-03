@@ -23,6 +23,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.ai.client import ErrorDeInferencia
 from src.database.pg import ErrorDeBaseDatos
+from src.security.auditoria import ErrorDeAuditoria
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,23 @@ def instalar_manejadores(app: FastAPI) -> None:
         return JSONResponse(
             status_code=503,
             content={"mensaje": "Base de datos no disponible.", "detalle": str(exc)},
+        )
+
+    @app.exception_handler(ErrorDeAuditoria)
+    async def _auditoria(request: Request, exc: ErrorDeAuditoria) -> JSONResponse:
+        """Sin auditoría no hay acción (SDD §7 regla 3): se contesta y no se ejecuta.
+
+        Aparece en el reinicio del Kill-Switch y en cualquier acción estricta.
+        El disparo NO pasa por aquí: ese camino es deliberadamente tolerante a
+        fallos y su respaldo es `logs/auditoria-pendiente.jsonl`.
+        """
+        del request
+        return JSONResponse(
+            status_code=503,
+            content={
+                "mensaje": "No se pudo registrar la acción en la auditoría. No se ejecutó.",
+                "detalle": str(exc),
+            },
         )
 
     @app.exception_handler(StarletteHTTPException)

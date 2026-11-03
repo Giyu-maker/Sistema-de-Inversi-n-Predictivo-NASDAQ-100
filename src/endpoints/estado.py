@@ -18,8 +18,9 @@ La regla de estado (provisional, documentada en `docs/despliegue.md`)
 velas del día): es el sistema esperando datos que todavía no existen, no una
 degradación (decisión D6).
 
-No hay estado rojo en esta fase: el rojo lo reservan el Kill-Switch y la
-pérdida límite (RF-501), que son del Sprint 4.
+No hay estado rojo salvo el Kill-Switch (RF-501): el rojo es exclusivo del
+bloqueo de emergencia, y manda incluso con el mercado cerrado. El resto de
+las causas siguen pintando amarillo.
 """
 
 from __future__ import annotations
@@ -42,11 +43,14 @@ from src.endpoints.dependencias import (
 from src.endpoints.esquemas import (
     EstadoSistemaSalida,
     IaSalida,
+    KillSwitchSalida,
     MercadoSalida,
     ModoSalida,
     PerfilSalida,
+    SenalSalida,
 )
 from src.ingestion.engine import NasdaqCandle
+from src.security.kill_switch import ResumenKillSwitch
 from src.security.perfiles import senal_sin_prediccion
 from src.utils.mercado import mercado
 
@@ -59,6 +63,28 @@ MOTIVO_BLOQUEO = (
     "Requiere autorización explícita de la Gerente General y autenticación "
     "multifactor local (OTP)."
 )
+
+#: Resumen usado cuando el proceso ni siquiera tiene motor configurado: no es
+#: «desactivado», es «no verificado», y por eso bloquea las órdenes.
+SIN_MOTOR = ResumenKillSwitch(
+    activo=None,
+    motivo=None,
+    origen=None,
+    liquidacion_estado="NINGUNA",
+    liquidaciones=0,
+    disparado_en=None,
+    reinicio_en=None,
+    detalle=(
+        "El servicio de Kill-Switch no está configurado en este proceso: "
+        "no se emitirán órdenes ni sugerencias."
+    ),
+)
+
+
+def resumen_kill_switch(estado: EstadoAplicacion) -> ResumenKillSwitch:
+    """Estado del bloqueo; `SIN_MOTOR` si la app no lo tiene montado."""
+    motor = estado.motor_kill_switch
+    return SIN_MOTOR if motor is None else motor.resumen()
 
 
 @router.get("/api/status", response_model=EstadoSistemaSalida, tags=["estado"])
@@ -83,6 +109,7 @@ def status(estado: EstadoAplicacion = Depends(estado_app)) -> EstadoSistemaSalid
             "La base de datos no responde: no se pudo leer la última predicción.",
         )
     ia = consultar_ia(estado)
+    bloqueo = resumen_kill_switch(estado)
 
     nombre_estado, motivo = _regla(
         abierto=est_mercado.abierto,
@@ -94,10 +121,16 @@ def status(estado: EstadoAplicacion = Depends(estado_app)) -> EstadoSistemaSalid
         ia=ia,
         ultima_prediccion=ultima_pred,
         error_pg=error_pg,
+        bloqueo=bloqueo.activo,
+        motivo_bloqueo=bloqueo.detalle,
     )
 
     # Avisos: lo que conviene saber pero no decide el estado (o que ya está en
     # el motivo y no debe repetirse a pantalla completa).
+    if bloqueo.activo is None:
+        # Estado no verificado: no pinta ROJO (eso es «activo») pero tampoco
+        # puede pasar desapercibido.
+        avisos.append(bloqueo.detalle)
     if est_mercado.abierto:
         if error_pg:
             avisos.append(error_pg)
@@ -115,6 +148,25 @@ def status(estado: EstadoAplicacion = Depends(estado_app)) -> EstadoSistemaSalid
             )
     else:
         avisos.extend([texto for texto in (vela_error, error_pg) if texto])
+
+    # Señal: con el bloqueo activo (o sin poder verificarlo) la respuesta es
+    # «no operable» con el texto del backend, sea cual sea la predicción.
+    senal_base = (
+        senal_de(ultima_pred, configuracion.risk_profile, avisos)
+        if ultima_pred is not None
+        else senal_sin_prediccion(configuracion.risk_profile)
+    )
+    if bloqueo.activo is False:
+        senal_salida = a_senal_salida(senal_base)
+    else:
+        senal_salida = SenalSalida(
+            operable=False,
+            motivo=bloqueo.detalle,
+            umbral=senal_base.umbral,
+            perfil=senal_base.perfil,
+            tendencia=senal_base.tendencia,
+            confianza=senal_base.confianza,
+        )
 
     return EstadoSistemaSalida(
         estado=nombre_estado,
@@ -146,10 +198,16 @@ def status(estado: EstadoAplicacion = Depends(estado_app)) -> EstadoSistemaSalid
         ultima_prediccion=(
             a_prediccion_salida(ultima_pred) if ultima_pred is not None else None
         ),
-        senal=a_senal_salida(
-            senal_de(ultima_pred, configuracion.risk_profile, avisos)
-            if ultima_pred is not None
-            else senal_sin_prediccion(configuracion.risk_profile)
+        senal=senal_salida,
+        kill_switch=KillSwitchSalida(
+            activo=bloqueo.activo,
+            detalle=bloqueo.detalle,
+            motivo=bloqueo.motivo,
+            origen=bloqueo.origen,
+            liquidacion_estado=bloqueo.liquidacion_estado,
+            liquidaciones=bloqueo.liquidaciones,
+            disparado_en=bloqueo.disparado_en,
+            reinicio_en=bloqueo.reinicio_en,
         ),
         avisos=avisos,
     )
@@ -186,8 +244,17 @@ def _regla(
     ia: IaSalida,
     ultima_prediccion: PrediccionGuardada | None,
     error_pg: str | None,
+    bloqueo: bool | None,
+    motivo_bloqueo: str,
 ) -> tuple[str, str]:
-    """La regla pura, separada del I/O para poder probarla sin endpoint."""
+    """La regla pura, separada del I/O para poder probarla sin endpoint.
+
+    El orden es el criterio: **primero** el Kill-Switch —un estado de
+    emergencia se ve siempre, hasta con el mercado cerrado—, después el
+    mercado, y al final el resto de las causas.
+    """
+    if bloqueo is True:
+        return "ROJO", motivo_bloqueo
     if not abierto:
         # P2.2: el chip ya dice «Mercado cerrado» — el motivo aporta el qué
         # y cuándo se reabre (frase CALCULADA en `mercado.motivo`).
@@ -195,6 +262,10 @@ def _regla(
 
     causas: list[str] = []  # problemas del sistema → «Revisar el sistema» (P1.7)
     inestable = False       # tendencia ≠ STABLE → «Mercado inestable» (P1.7)
+    if bloqueo is None:
+        # Estado del Kill-Switch no verificado: no es «activado», pero el
+        # sistema no puede afirmar que está operando con normalidad.
+        causas.append("no se pudo verificar el estado del Kill-Switch")
     if vela_error:
         causas.append(vela_error)
     elif ultima_vela_ms is None:

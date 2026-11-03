@@ -244,6 +244,8 @@ class TestReglaPura:
             ia=IaSalida(disponible=True, detalle="ok"),
             ultima_prediccion=None,
             error_pg=None,
+            bloqueo=False,
+            motivo_bloqueo="Sin bloqueo: el Kill-Switch está desactivado.",
         )
         base.update(cambios)
         return base
@@ -258,6 +260,33 @@ class TestReglaPura:
         assert _regla(**self._datos())[0] in ESTADOS_SISTEMA
         assert _regla(**self._datos(abierto=False))[0] in ESTADOS_SISTEMA
         assert _regla(**self._datos(ia=IaSalida(disponible=False, detalle="x")))[0] in ESTADOS_SISTEMA
+
+    def test_kill_switch_activo_es_rojo_con_el_texto_del_backend(self) -> None:
+        # RF-501: la emergencia manda sobre TODO, incluso sobre «cerrado».
+        texto = "Kill-Switch ACTIVO desde 03/11/2026 09:00:00: prueba."
+        estado, motivo = _regla(
+            **self._datos(bloqueo=True, motivo_bloqueo=texto)
+        )
+        assert estado == "ROJO"
+        assert motivo == texto
+
+    def test_kill_switch_activo_manda_sobre_el_mercado_cerrado(self) -> None:
+        estado, motivo = _regla(
+            **self._datos(abierto=False, bloqueo=True, motivo_bloqueo="¡Bloqueado!")
+        )
+        assert estado == "ROJO"
+        assert motivo == "¡Bloqueado!"
+
+    def test_kill_switch_sin_verificar_es_amarillo_no_verde(self) -> None:
+        # «No lo sé» no puede pintar normalidad.
+        estado, motivo = _regla(**self._datos(bloqueo=None, motivo_bloqueo="sin verificar"))
+        assert estado == "AMARILLO"
+        assert "no se pudo verificar el estado del Kill-Switch" in motivo
+
+    def test_kill_switch_sin_verificar_tambien_puede_pintar_cerrado(self) -> None:
+        # Con el mercado cerrado el chip es CERRADO (lo normal de la noche);
+        # el bloqueo de órdenes sigue activo aunque el color no lo diga.
+        assert _regla(**self._datos(abierto=False, bloqueo=None))[0] == "CERRADO"
 
 
 def _fila_prediccion(tendencia: str, confianza: float) -> PrediccionGuardada:
