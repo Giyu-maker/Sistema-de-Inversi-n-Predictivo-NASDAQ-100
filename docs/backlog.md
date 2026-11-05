@@ -68,27 +68,29 @@ El desarrollo del sistema para RiTech SAS se distribuye de manera balanceada en 
 
 #### SPRINT 4: Seguridad Operativa, Integración con Broker y Cierre
 *   **Objetivo:** Implementar los mecanismos de protección de capital (Kill-Switch), auditoría inmutable, notificaciones locales e integración real en cuenta Sandbox con Interactive Brokers para habilitar el Modo Sombra.
-*   **Estado de cierre (03/11/2026) — alcance mínimo aprobado, 6 commits:**
-    *   *Ítem 9:* **COMPLETADO** (Kill-Switch con estado persistido, disparo automático al −1,25 %, SimulatedBrokerGateway y demostración por pruebas de integración con predicciones inyectadas — se sustituyó el script de demostración y la base aparte por `tests/test_flujo_ordenes.py`).
-    *   *Ítem 10:* **COMPLETADO** (auditoría inmutable a nivel de PostgreSQL, verificada contra el motor real).
-    *   *Ítem 11:* **NO EMPEZADO** (notificaciones SMS/SMTP) — trabajo futuro.
-    *   *Ítem 12:* **PARCIAL** (solo la parte simulada: `SimulatedBrokerGateway`; el TCP real con IB sigue pendiente).
-    *   *Ítem 13:* **NO EMPEZADO** (reportes PDF/CSV) — trabajo futuro.
-    *   *Alcance recortado:* S4.2 (login y roles) eliminado → reinicio con clave de reinicio; detalle y brechas en `docs/change-requests.md` CR-005 y CR-006; verificación en `docs/informe-sprint4.md`.
+*   **Nomenclatura:** los **Ítems 9–13** de este documento son los **SS-9…SS-13 del tablero del curso** — misma numeración, dos nombres. Aquí se usan «Ítem N» porque es la del repositorio.
+*   **IDs de requisitos:** los Ítems 1–8 conservan la numeración de la planificación original (`RF-01`…`RNF-06`), que **no existe en el SRS v1.1** y no debe usarse para trazabilidad. Los IDs válidos son los de [`docs/matriz-cumplimiento.md`](matriz-cumplimiento.md): `RF-101`…`RF-801`, `RNF-001`…`RNF-011`, `REST-01`…`REST-06`. Los Ítems 9–13 ya los usan.
+*   **Estado real (cierre del Sprint 4, 03/11/2026):** la fuente de verdad requisito por requisito es [`docs/matriz-cumplimiento.md`](matriz-cumplimiento.md) (15 Cumple · 21 Parcial · 3 Futuro de 39). **Este bloque no puede contradecir esa matriz**; si difieren, manda la matriz.
+    *   [x] **Ítem 9 = SS-9 — COMPLETADO.** Kill-Switch con estado persistido, disparo automático al −1,25 %, `SimulatedBrokerGateway` y flujo demostrado con predicciones inyectadas (verificación de pipeline, no de rendimiento del modelo). *Evidencia:* `docs/informe-sprint4.md` §2, `tests/test_kill_switch.py`, `tests/test_flujo_ordenes.py`. *Brechas:* RF-501/RF-502/RF-503 quedan **Parcial** en la matriz (sin captura end-to-end, liquidación simulada, reinicio sin identidad) → **CR-005**, **CR-006**.
+    *   [x] **Ítem 10 = SS-10 — COMPLETADO (solo a nivel de base de datos).** `audit_logs` inmutable con triggers de fila y de TRUNCATE, `ENABLE ALWAYS` y `REVOKE`, verificados contra PostgreSQL real. *Evidencia:* `docs/informe-sprint4.md` §3, `tests/test_schema.py::TestAuditoriaInmutable`, `scripts/demo_inmutabilidad.sql`. *Brecha:* RF-701 sigue **Parcial** por los 5 años sin herramienta de purga → **CR-005**. Lo que falta para verlo es el visor de solo lectura (FASE D, D4).
+    *   [ ] **Ítem 11 = SS-11 — FUTURO** (notificaciones SMS/SMTP; hoy no existe ningún código de notificación). *Estado en la matriz:* sin fila propia — su efecto estaría en **RNF-009** (alertar al operador) y **SRS §5.4**. *CR:* se abre en **CR-007** cuando se implemente.
+    *   [ ] **Ítem 12 = SS-12 — PARCIAL.** Existe solo lo simulado: `SimulatedBrokerGateway` con `is_simulated = true`; **el TCP real con Interactive Brokers no está**. *Evidencia:* `src/integration/broker.py`, `docs/informe-sprint4.md` §2. *Brechas:* RF-402, RF-502, RF-601, RNF-009 y RNF-010 quedan **Parcial** (liquidación sin medir contra IB real) → **CR-005**.
+    *   [ ] **Ítem 13 = SS-13 — FUTURO** (reportes PDF/CSV: `src/utils/export.py` no existe todavía). *Evidencia de la brecha:* matriz **RF-702 = Futuro**. *CR:* se abre en **CR-007** cuando se implemente.
+    *   *Alcance recortado del Sprint 4:* S4.2 (login y roles) eliminado → reinicio con clave de reinicio; detalle y brechas en `docs/change-requests.md` **CR-005** y **CR-006**; verificación en `docs/informe-sprint4.md`.
 *   **Ítem 9: Módulo de Gestión de Riesgos y Kill-Switch Maestro (Javier Martínez)**
     *   *Descripción:* Desarrollo de la lógica de contención que corta asíncronamente el trading autónomo de la IA y envía peticiones síncronas bloqueantes al broker para cerrar posiciones.
     *   *Restricción de negocio (Sprint 3, informe §10.3):* El `RiskManager` **solo abre posición con `UP`/`DOWN`; `STABLE` nunca abre, con cualquier confianza.** En el entrenamiento del Sprint 3 el 100 % de las predicciones por encima de 0,65 fueron `STABLE` y ninguna `UP`/`DOWN` alcanzó siquiera el umbral más bajo, así que con el modelo actual el sistema no abriría posición alguna. **Esa abstención es el comportamiento correcto y no es un defecto que haya que corregir**: es lo que RF-304 existe para producir ante una señal que no se puede defender.
     *   *Criterio de verificación:* Demostrar el flujo Autónomo/Sombra con **predicciones inyectadas en los tests**, etiquetadas explícitamente como **verificación de pipeline, no de rendimiento del modelo.** No se puede usar el modelo real para recorrer el flujo porque, por el punto anterior, no genera `UP`/`DOWN` que superen el umbral.
-    *   *Estimación:* 5 días | *Valor:* 9/10 | *Requisito:* RF-06, RNF-06.
+    *   *Estimación:* 5 días | *Valor:* 9/10 | *Requisito:* RF-501, RF-502, RF-503, RNF-010.
 *   **Ítem 10: Logs de Auditoría Inmutables a 5 Años (Javier Martínez)**
     *   *Descripción:* Persistencia inalterable de cada transacción, logs de acceso IP corporativos y explicaciones XAI en PostgreSQL de la Máquina 2 para fines regulatorios.
-    *   *Estimación:* 6... | *Valor:* 8/10 | *Requisito:* RNF-05.
+    *   *Estimación:* 6... | *Valor:* 8/10 | *Requisito:* RF-701 (y SRS §4.4, retención/purga).
 *   **Ítem 11: Módulo de Notificaciones Locales SMS/SMTP (Dylan Merchancano)**
     *   *Descripción:* Despacho asíncrono de alertas de pérdida de conexión de red o activación del Kill-switch directo a celulares de traders vía puerto serie GSM o servidor SMTP interno.
-    *   *Estimación:* 4 días | *Valor:* 7/10 | *Requisito:* RF-04 (Asesor).
+    *   *Estimación:* 4 días | *Valor:* 7/10 | *Requisito:* SRS §5.4 (alertas SMS/correo), RNF-009 — no existe «RF-04» en el SRS v1.1.
 *   **Ítem 12: Integración de Interactive Brokers local vía Sockets TCP (Dylan Merchancano)**
     *   *Descripción:* Configuración del gateway de Interactive Brokers (TWS API) en el servidor local para ejecución automática asíncrona de órdenes (Modo Sombra y Autónomo).
-    *   *Estimación:* 10 días | *Valor:* 6/10 | *Requisito:* RF-04 (Autónomo).
+    *   *Estimación:* 10 días | *Valor:* 6/10 | *Requisito:* RF-402, RF-601, RF-602 — no existe «RF-04» en el SRS v1.1.
 *   **Ítem 13: Generador de Reportes Financieros Tabulares (Dylan Merchancano)**
     *   *Descripción:* Módulo frontend en React para exportación asíncrona local de PDF/CSV con los rendimientos de RiTech frente al NASDAQ.
-    *   *Estimación:* 4 días | *Valor:* 5/10 | *Requisito:* RF-07.
+    *   *Estimación:* 4 días | *Valor:* 5/10 | *Requisito:* RF-702 — no existe «RF-07» en el SRS v1.1.
