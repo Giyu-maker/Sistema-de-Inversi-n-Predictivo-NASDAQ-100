@@ -15,6 +15,8 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from datetime import date
+
 from src.security import clave_reinicio
 from src.security.auditoria_pendiente import ColaAuditoriaPendiente
 from src.security.kill_switch import BanderaBloqueo, KillSwitchEngine
@@ -31,6 +33,8 @@ from tests.fakes import (
 )
 
 AHORA_MS = 1_800_000_000_000
+#: Sesión de referencia para reiniciar entre muestras (fecha ET).
+SESION_DIA = date(2026, 11, 3)
 CLAVE = "clave-de-reinicio-correcta"
 HASH = clave_reinicio.generar_hash(CLAVE, iteraciones=1_000)
 
@@ -409,3 +413,90 @@ class TestLatenciaDeLaPulsacion:
             f"p50 {p50:.2f} ms / p95 {p95:.2f} ms"
         )
         assert p95 < 250.0, "la pulsación no puede tardar más que esto"
+
+
+class TestLatenciaConPostgresReal:
+    """Pulsación→respuesta con el **compare-and-set contra PostgreSQL real**.
+
+    Es la única cifra que une las dos mitades de RNF-010: lo que ve quien
+    pulsa el botón, con la persistencia de verdad (connect + UPDATE + commit
+    en `ritech-postgres16`), el CAS de seguridad de la liquidación y el
+    `resumen()` que se devuelve al panel.
+
+    **Excluido a propósito:** el `INSERT` de `audit_logs` (una medición no
+    es un evento, y `audit_logs` es inmutable: no habría forma de limpiarla)
+    — la auditoría va a un doble. La liquidación es **simulada**
+    (`SimulatedBrokerGateway`); contra IB real no se ha medido (Ítem 12).
+    """
+
+    @staticmethod
+    def _percentil(valores: list[float], p: float) -> float:
+        ordenados = sorted(valores)
+        posicion = int(round(p * (len(ordenados) - 1)))
+        return ordenados[max(0, min(len(ordenados) - 1, posicion))]
+
+    @pytest.fixture()
+    def cliente_real(self):
+        from src.database import pg
+        from src.database.kill_switch import KillSwitchPostgres
+        from src.integration.broker import SimulatedBrokerGateway
+        from tests.fakes import TransaccionesFalsas
+        from tests.test_kill_switch import _cargar_env
+
+        _cargar_env()
+        try:
+            with pg.conexion() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT to_regclass('kill_switch_state');")
+                    existe = cur.fetchone()[0]
+        except Exception as exc:  # noqa: BLE001 — sin contenedor no hay prueba viva
+            pytest.skip(f"PostgreSQL no responde: {str(exc)[:80]}")
+        if existe is None:
+            pytest.skip("esquema sin aplicar: correr tests/test_schema.py")
+
+        repo = KillSwitchPostgres()
+        transacciones = TransaccionesFalsas(neta=2.0)
+        banda = BanderaBloqueo()
+        motor = KillSwitchEngine(
+            repo,
+            SimulatedBrokerGateway(
+                transacciones,
+                precio_actual=lambda _s: 512.5,
+                ahora_ms=lambda: AHORA_MS,
+                nuevo_id=lambda: f"SIM-{len(transacciones.guardadas) + 1}",
+            ),
+            AuditorKillSwitchFalso(),
+            banda=banda,
+            ahora_ms=lambda: AHORA_MS,
+        )
+        return SimpleNamespace(
+            cliente=cliente_de_prueba(estado_de_prueba(motor=motor)),
+            repo=repo,
+            banda=banda,
+        )
+
+    def test_pulsacion_a_respuesta_contra_postgres_real(self, cliente_real) -> None:
+        import time
+
+        muestras: list[float] = []
+        for _ in range(10):
+            inicio = time.perf_counter()
+            respuesta = cliente_real.cliente.post("/api/kill-switch")
+            muestras.append((time.perf_counter() - inicio) * 1000)
+            assert respuesta.status_code == 200
+            cuerpo = respuesta.json()
+            assert cuerpo["primera_vez"] is True
+            assert cuerpo["persistencia_ok"] is True, "el CAS sí fue a la base"
+            assert cuerpo["ms_persistencia"] > 0, "la medición del CAS existe"
+            # Cada muestra parte de inactivo.
+            cliente_real.repo.reiniciar(ahora_ms=AHORA_MS, sesion=SESION_DIA)
+            cliente_real.banda.liberar()
+
+        p50 = self._percentil(muestras, 0.5)
+        p95 = self._percentil(muestras, 0.95)
+        print(
+            f"\nRNF-010 (HTTP + PostgreSQL real, sin auditoría): "
+            f"pulsación→respuesta p50 {p50:.2f} ms / p95 {p95:.2f} ms"
+        )
+        assert cliente_real.repo.leer().activo is False, "deja todo inactivo"
+        assert p95 < 500.0, "por debajo de la cota de RNF-003"

@@ -575,12 +575,19 @@ class TestMotorReal:
 
 
 class TestLatenciasRnf010:
-    """RNF-010 medido: pulsación→bloqueo y pulsación→liquidación.
+    """RNF-010 medido: cuatro cifras que miden cuatro cosas distintas.
 
-    RNF-010 pide «prioridad a nivel de hilos de CPU», que en Python no existe
-    literalmente (ver el docstring de `src/security/kill_switch.py`). Lo que
-    sí se puede cumplir es el orden y la inmediatez, y eso se mide aquí:
-    cuánto tarda el corte y cuánto tarda la liquidación tras la pulsación.
+    | cifra | qué la compone | contra qué corre |
+    |---|---|---|
+    | `ms_bloqueo` | solo la bandera en memoria del proceso | nada (sin I/O) |
+    | `ms_persistencia` | solo el `UPDATE … WHERE activo = FALSE` + commit | el repositorio que se le pase: aquí **PostgreSQL real** |
+    | `ms_liquidacion` | solo la llamada al `BrokerGateway` | `SimulatedBrokerGateway` con repositorio **en memoria** |
+    | pulsación→respuesta | la petición HTTP entera | `tests/test_endpoints_kill_switch.py` |
+
+    Ninguna incluye a la otra. **La liquidación es simulada**: contra IB real
+    no se ha medido nada (Ítem 12 pendiente), y así se rotula en el informe
+    §4. RNF-010 pide «prioridad a nivel de hilos de CPU», que en Python no
+    existe literalmente — ver el docstring de `src/security/kill_switch.py`.
     """
 
     @staticmethod
@@ -590,14 +597,31 @@ class TestLatenciasRnf010:
         return ordenados[max(0, min(len(ordenados) - 1, posicion))]
 
     @staticmethod
-    def _medir(repo, n: int) -> tuple[list[float], list[float]]:
-        """`n` disparos completos, cada uno con su reinicio (estado limpio)."""
+    def _medir(repo, n: int) -> tuple[list[float], list[float], list[float]]:
+        """`n` disparos completos, cada uno con su reinicio (estado limpio).
+
+        El broker es el **real** (`SimulatedBrokerGateway`) sobre un
+        repositorio de transacciones en memoria con una posición abierta:
+        se cronometra el camino de verdad —calcular posiciones, pedir precio
+        y construir la transacción— sin escribir en `transactions`.
+        """
+        from src.integration.broker import SimulatedBrokerGateway
+        from tests.fakes import TransaccionesFalsas
+
         bloqueos: list[float] = []
+        persistencias: list[float] = []
         liquidaciones: list[float] = []
         for _ in range(n):
             banda = BanderaBloqueo()
+            transacciones = TransaccionesFalsas(neta=2.0)
+            broker = SimulatedBrokerGateway(
+                transacciones,
+                precio_actual=lambda _s: 512.5,
+                ahora_ms=lambda: 1_800_000_000_000,
+                nuevo_id=lambda: f"SIM-{len(transacciones.guardadas) + 1}",
+            )
             motor = KillSwitchEngine(
-                repo, BrokerKillSwitchFalso(), AuditorKillSwitchFalso(),
+                repo, broker, AuditorKillSwitchFalso(),
                 banda=banda, ahora_ms=lambda: 1_800_000_000_000,
             )
             resultado = motor.execute_global_liquidation(
@@ -605,44 +629,76 @@ class TestLatenciasRnf010:
                 actor="OPERADOR", ip_address="127.0.0.1",
             )
             assert resultado.primera_vez is True, "cada muestra parte de inactivo"
+            assert resultado.ordenes == 1, "la liquidación debe recorrer el camino real"
             bloqueos.append(resultado.ms_bloqueo)
+            persistencias.append(resultado.ms_persistencia)
             liquidaciones.append(resultado.ms_liquidacion)
             repo.reiniciar(ahora_ms=2, sesion=SESION)
-        return bloqueos, liquidaciones
+        return bloqueos, persistencias, liquidaciones
 
-    def test_las_latencias_caben_en_la_cota(self) -> None:
-        # Cota holgada: con dobles no hay red ni disco, y aun así el corte
-        # no debe tardar más de unos milisegundos.
-        bloqueos, liquidaciones = self._medir(RepoKillSwitchFalso(), n=50)
-        p95_bloqueo = self._percentil(bloqueos, 0.95)
-        p95_liquidacion = self._percentil(liquidaciones, 0.95)
-        print(
-            f"\nRNF-010 (dobles): bloqueo p50 {self._percentil(bloqueos, 0.5):.3f} ms "
-            f"/ p95 {p95_bloqueo:.3f} ms · liquidación p50 "
-            f"{self._percentil(liquidaciones, 0.5):.3f} ms / p95 {p95_liquidacion:.3f} ms"
+    @staticmethod
+    def _imprimir(rotulo: str, bloqueos, persistencias, liquidaciones) -> None:
+        imprimir = lambda nombre, v: (
+            f"{nombre} p50 {TestLatenciasRnf010._percentil(v, 0.5):.3f} ms "
+            f"/ p95 {TestLatenciasRnf010._percentil(v, 0.95):.3f} ms"
         )
-        assert p95_bloqueo < 50.0, "el corte no puede tardar más que esto"
-        assert p95_liquidacion < 100.0
+        print(
+            f"\nRNF-010 [{rotulo}]\n"
+            f"  banda en memoria (sin I/O):        {imprimir('', bloqueos)}\n"
+            f"  compare-and-set en la base:        {imprimir('', persistencias)}\n"
+            f"  liquidación (gateway simulado):    {imprimir('', liquidaciones)}"
+        )
+
+    def test_con_cotas_con_dobles(self) -> None:
+        # Repositorio en memoria: mide el overhead del propio motor.
+        bloqueos, persistencias, liquidaciones = self._medir(
+            RepoKillSwitchFalso(), n=50
+        )
+        self._imprimir("dobles en memoria", bloqueos, persistencias, liquidaciones)
+
+        assert self._percentil(bloqueos, 0.95) < 50.0, "el corte no puede tardar"
+        assert self._percentil(persistencias, 0.95) < 50.0
+        assert self._percentil(liquidaciones, 0.95) < 100.0
 
     def test_contra_postgres_real(self, repo_real) -> None:
         """Las mismas cifras con el compare-and-set de verdad.
 
-        Sin `audit_logs` de por medio (el doble de auditoría): lo que se
-        mide es la banda + el CAS en PostgreSQL real + la liquidación.
-        Deja `kill_switch_state` inactiva, como la encontró.
+        El repositorio es `KillSwitchPostgres` contra `ritech-postgres16`:
+        ahí sí hay red local, `UPDATE` y `commit`. Sin `audit_logs` de por
+        medio (el doble de auditoría), porque lo que se mide es el bloqueo,
+        no el log. Deja `kill_switch_state` inactiva, como la encontró.
         """
-        bloqueos, liquidaciones = self._medir(repo_real, n=20)
-        p95_bloqueo = self._percentil(bloqueos, 0.95)
-        p95_liquidacion = self._percentil(liquidaciones, 0.95)
-        print(
-            f"\nRNF-010 (PostgreSQL real): bloqueo p50 "
-            f"{self._percentil(bloqueos, 0.5):.3f} ms / p95 {p95_bloqueo:.3f} ms · "
-            f"liquidación p50 {self._percentil(liquidaciones, 0.5):.3f} ms / "
-            f"p95 {p95_liquidacion:.3f} ms"
+        bloqueos, persistencias, liquidaciones = self._medir(repo_real, n=20)
+        self._imprimir(
+            "PostgreSQL real", bloqueos, persistencias, liquidaciones
         )
-        assert repo_real.leer() is not None
-        assert repo_real.leer().activo is False, "la medición deja todo inactivo"
+
+        estado = repo_real.leer()
+        assert estado is not None and estado.activo is False, "deja todo inactivo"
         # RNF-010 no da una cifra; la cota es la de RNF-003 (500 ms) por
         # prudencia, y en la práctica va dos órdenes de magnitud por debajo.
-        assert p95_bloqueo < 500.0
-        assert p95_liquidacion < 500.0
+        assert self._percentil(bloqueos, 0.95) < 500.0
+        assert self._percentil(persistencias, 0.95) < 500.0
+        assert self._percentil(liquidaciones, 0.95) < 500.0
+
+    def test_cada_latencia_es_de_su_paso(self) -> None:
+        # El orden cronológico es bandera → CAS → liquidación, y cada
+        # medición cubre SOLO su paso: si alguna empezara a engordar
+        # (p. ej. meter el I/O dentro de la bandera), esto lo delata.
+        repo = RepoKillSwitchFalso()
+        broker = BrokerKillSwitchFalso()
+        banda = BanderaBloqueo()
+        motor = KillSwitchEngine(
+            repo, broker, AuditorKillSwitchFalso(),
+            banda=banda, ahora_ms=lambda: 1,
+        )
+        resultado = motor.execute_global_liquidation(
+            motivo="x", origen="MANUAL", actor="OPERADOR", ip_address="127.0.0.1"
+        )
+        assert resultado.ms_bloqueo >= 0.0
+        assert resultado.ms_persistencia >= 0.0
+        assert resultado.ms_liquidacion >= 0.0
+        # Sin I/O, la banda y la liquidación con dobles son despreciables;
+        # el CAS con dobles también. Lo importante es que existan por
+        # separado: `ms_persistencia` no formaba parte del resultado antes.
+        assert broker.liquidaciones == 1

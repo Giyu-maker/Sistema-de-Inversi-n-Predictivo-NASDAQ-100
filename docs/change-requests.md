@@ -375,11 +375,22 @@ siguiente sesión. Si es un gap (RF-203), el payload registra la pérdida
 - **Idempotencia del disparo:** el compare-and-set probado en vivo —una
   sola ganancia por activación—, más la prueba de «pulsar dos veces no
   liquidó dos veces» (el acumulado `liquidaciones` lo demuestra en la base).
-- **876 pruebas** en verde (`pytest -q`), 47 de frontend (`node --test`),
+- **878 pruebas** en verde (`pytest -q`), 47 de frontend (`node --test`),
   `oxlint` y `vite build` sin avisos.
-- **Latencias RNF-010** (informe §4): pulsación→respuesta HTTP
-  p50 1,48 ms / p95 2,56 ms; banda + CAS real + liquidación p50 0,003 /
-  p95 0,004 ms (bloqueo) y p50 0,004 / p95 0,005 ms (liquidación).
+- **Latencias RNF-010 con su desglose** (informe §4.1–§4.2): son **cuatro
+  cifras de cuatro pasos distintos y ninguna incluye a otra** —
+  (1) bandera en memoria p50 0,003 / p95 **0,004 ms** (sin I/O);
+  (2) **compare-and-set contra PostgreSQL real** p50 **7,81** / p95
+  **11,83 ms** (`UPDATE … WHERE activo = FALSE` + `commit`);
+  (3) liquidación p50 0,027 / p95 **0,038 ms** contra
+  **`SimulatedBrokerGateway` con repositorio en memoria** — **es
+  simulada: contra Interactive Brokers real queda sin medir** (Ítem 12);
+  (4) pulsación→respuesta HTTP p95 **1,66 ms** con dobles de base y p95
+  **40,06 ms** con PostgreSQL real. El `INSERT` de `audit_logs` no está en
+  ninguna de ellas (medirlo exigiría escribir en una tabla inmutable).
+  `ResultadoDisparo` expone las tres primeras por separado
+  (`ms_bloqueo`, `ms_persistencia`, `ms_liquidacion`) y también van en la
+  respuesta de `POST /api/kill-switch` y en el `payload` del evento.
 
 ### Impacto
 
@@ -453,6 +464,14 @@ etiquetados como verificación de pipeline y no de rendimiento del modelo.
 | **SRS §3.4.2 / RF-402** — OTP para Modo Autónomo | **No implementado**. | El modo no se puede cambiar por API. |
 | **SRS §4.3 (SDD)** — transición de modos con OTP | **No implementado**. | Ídem. |
 | TLS en la intranet | **No implementado**. | Red física de la oficina (REST-05); queda como trabajo futuro. |
+
+**Nota sobre RNF-010:** las cifras de latencia y **qué mide exactamente
+cada una** están desglosadas en **CR-005** y en `docs/informe-sprint4.md`
+§4.1: banda en memoria, compare-and-set contra PostgreSQL real, liquidación
+y pulsación→respuesta HTTP son cuatro medidas distintas que no se suman.
+La liquidación medida es contra `SimulatedBrokerGateway` (**simulada**); el
+tiempo **contra Interactive Brokers real queda sin medir** hasta que exista
+el Ítem 12.
 
 ### Dependencias
 

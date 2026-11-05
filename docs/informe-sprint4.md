@@ -18,7 +18,7 @@
 | `c773e21` | **C5** — UI | Control en la cabecera (2 toques), chip `ROJO` con parpadeo lento, esquemas Zod, escenario `kill-switch-activo` |
 | *(este)* | **C6** — Cierre | CR-005 y CR-006, runbook RF-801, este informe, `AGENTS.md` |
 
-**Pruebas:** 876 en Python (`pytest -q`), 47 en frontend (`node --test`),
+**Pruebas:** 878 en Python (`pytest -q`), 47 en frontend (`node --test`),
 `oxlint` y `vite build` sin avisos. Las 668 del Sprint 3 siguen en verde:
 no se rompió ninguna.
 
@@ -100,7 +100,7 @@ queda como trabajo futuro.
 
 ---
 
-## 4. RNF-010 — interpretación y cifras
+## 4. RNF-010 — interpretación y qué mide cada cifra
 
 **Interpretación escrita** (no aplica literalmente en Python: no hay
 prioridades de hilo utilizables sin ser root):
@@ -112,24 +112,66 @@ prioridades de hilo utilizables sin ser root):
 3. las tareas de orden pendientes se cancelan al activarse;
 4. se miden pulsación→bloqueo y pulsación→liquidación.
 
-**Cifras** (20–30 disparos por fila, `pytest -s`, 03/11/2026):
+### 4.1 Qué mide exactamente cada cifra
 
-| Medida | p50 | p95 |
+Las cuatro medidas son de **cuatro pasos distintos y ninguna incluye a
+otra**. Es lo que hay que leer antes de mirar los números:
+
+| Cifra | Qué cronometra | Contra qué corre | Qué **excluye** |
+|---|---|---|---|
+| **Bandera en memoria** (`ms_bloqueo`) | solo `BanderaBloqueo.activar()` | nada: sin I/O, sin red, sin disco | la base, la liquidación, la auditoría, el HTTP |
+| **Compare-and-set** (`ms_persistencia`) | solo `UPDATE … WHERE activo = FALSE` + `commit` de `kill_switch_state` | **PostgreSQL real** (`ritech-postgres16`, en la red local) | la bandera, la liquidación, la auditoría |
+| **Liquidación** (`ms_liquidacion`) | solo `BrokerGateway.liquidar_todo()` | **`SimulatedBrokerGateway`** con repositorio de transacciones **en memoria** | la base, la auditoría — y **no es IB real** |
+| **Pulsación → respuesta HTTP** | la petición `POST /api/kill-switch` entera, hasta tener la respuesta | dos variantes: con dobles de base, y con **PostgreSQL real** | el `INSERT` de `audit_logs` |
+
+**Tres precisiones que no admiten ambigüedad:**
+
+- **La liquidación es simulada.** Las cifras de la fila 3 salen de
+  `SimulatedBrokerGateway` sobre un repositorio en memoria: miden el
+  camino de verdad del código (calcular posiciones, pedir precio, construir
+  la transacción) **sin** escribir en `transactions` y **sin** red hacia un
+  broker. **El tiempo contra Interactive Brokers real queda SIN MEDIR**: el
+  Ítem 12 (TCP con IB Gateway) no existe todavía.
+- **El `INSERT` de `audit_logs` tampoco está en ninguna cifra.** Medirlo
+  exigiría escribir en una tabla inmutable — no habría forma de limpiar la
+  medición —, así que se excluye. Es un `INSERT` simple, del mismo tipo que
+  el compare-and-set de la fila 2.
+- **Las cifras no se suman entre sí**, pero tampoco son despreciables unas
+  respecto a otras: el compare-and-set contra PostgreSQL real cuesta
+  **~8 ms**, que es órdenes de magnitud más que la bandera (~3 µs). Es
+  exactamente por eso que el orden del motor es **bandera primero y base
+  después**: el bloqueo en el proceso no espera a la red.
+
+### 4.2 Cifras
+
+Medidas con `pytest -s`, 05/11/2026 (10–50 disparos por fila):
+
+| Cifra | p50 | p95 |
 |---|---|---|
-| Pulsación → respuesta HTTP (motor real sobre dobles) | **1,48 ms** | **2,56 ms** |
-| Bloqueo: bandera + compare-and-set en **PostgreSQL real** | **0,003 ms** | **0,004 ms** |
-| Liquidación (mismo banco) | **0,004 ms** | **0,005 ms** |
-| Bloqueo con dobles puros (solo memoria) | 0,001 ms | 0,001 ms |
+| Bandera en memoria (sin I/O) | **0,003 ms** | **0,004 ms** |
+| Compare-and-set contra **PostgreSQL real** | **7,81 ms** | **11,83 ms** |
+| Compare-and-set con repositorio en memoria | 0,002 ms | 0,004 ms |
+| Liquidación — **SimulatedBrokerGateway**, repo en memoria | **0,027 ms** | **0,038 ms** |
+| Pulsación → respuesta HTTP, motor con dobles | **1,37 ms** | **1,66 ms** |
+| Pulsación → respuesta HTTP + **PostgreSQL real** (sin auditoría) | **28,58 ms** | **40,06 ms** |
 
-*Las cifras varían ligeramente entre corridas sin cambiar de magnitud: una
-corrida previa dio p95 3,57 ms en el HTTP y 0,009 ms en la liquidación.
-Con esas salidas, RNF-010 queda muy por debajo de la cota de 500 ms.*
+*Las cifras varían entre corridas sin cambiar de magnitud (una corrida
+previa dio 2,56 ms de p95 en el HTTP con dobles y 9,20 ms en el CAS real).
+Todas quedan muy por debajo de la cota de 500 ms de RNF-003.*
 
-**Qué incluye y qué no:** la columna del medio no incluye el `INSERT` de
-auditoría (se mide aparte, en el camino completo de la columna de arriba) ni
-el HTTP; la de arriba incluye la petición entera pero corre sobre dobles de
-base de datos. Ninguna cifra incluye la latencia de red de la intranet ni
-la de un IB Gateway real, que aún no existe (Ítem 12).
+### 4.3 Por qué 28 ms en lugar de 1,8 ms
+
+La fila 6 es la única que muestra el camino **completo** con la base real:
+bandera + CAS + marcar `EN_CURSO` + marcar `COMPLETADA` + el `resumen()` que
+se devuelve al panel. Son **cuatro idas y vueltas** a PostgreSQL de ~7–8 ms
+cada una (conexión nueva por operación, sin *pool*: decisión documentada en
+`src/database/pg.py`), y solo una de ellas es el compare-and-set. La fila 5
+es el mismo camino sin base, y la diferencia entre las dos es, literalmente,
+el coste de la persistencia.
+
+El requisito que RNF-010 pide proteger —**bloquear antes de liquidar**— se
+cumple en los primeros **0,003 ms** de la fila 1; todo lo demás ocurre ya
+con el sistema bloqueado.
 
 ---
 

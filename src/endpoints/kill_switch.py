@@ -119,6 +119,7 @@ def disparar(request: Request, estado: EstadoAplicacion = Depends(estado_app)) -
         reinicio_en=resumen.reinicio_en,
         primera_vez=resultado.primera_vez,
         ms_bloqueo=round(resultado.ms_bloqueo, 3),
+        ms_persistencia=round(resultado.ms_persistencia, 3),
         ms_liquidacion=round(resultado.ms_liquidacion, 3),
         ordenes_simuladas=resultado.ordenes,
         persistencia_ok=resultado.persistencia_ok,

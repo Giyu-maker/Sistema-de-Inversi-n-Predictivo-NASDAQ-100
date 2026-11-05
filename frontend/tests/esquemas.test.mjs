@@ -292,8 +292,9 @@ const DISPARO_REAL = {
     'Kill-Switch activo. Se liquidaron 1 posición(es) simulada(s); no se ' +
     'emitirán órdenes ni sugerencias hasta un reinicio autorizado.',
   primera_vez: true,
-  ms_bloqueo: 0.004,
-  ms_liquidacion: 0.009,
+  ms_bloqueo: 0.001,
+  ms_persistencia: 0.42,
+  ms_liquidacion: 0.09,
   ordenes_simuladas: 1,
   persistencia_ok: true,
   auditoria_ok: true,
@@ -337,6 +338,7 @@ test('la respuesta del disparo exige sus métricas', () => {
   for (const campo of [
     'primera_vez',
     'ms_bloqueo',
+    'ms_persistencia',
     'ms_liquidacion',
     'ordenes_simuladas',
     'persistencia_ok',

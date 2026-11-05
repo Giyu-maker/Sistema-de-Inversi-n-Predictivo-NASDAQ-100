@@ -154,10 +154,23 @@ class ResumenKillSwitch:
 
 @dataclass(frozen=True)
 class ResultadoDisparo:
-    """Lo que pasó en un disparo, para la respuesta, la auditoría y el informe."""
+    """Lo que pasó en un disparo, para la respuesta, la auditoría y el informe.
+
+    Las tres latencias miden cosas **distintas** y ninguna incluye a la
+    otra (desglose completo en `docs/informe-sprint4.md` §4):
+
+    * `ms_bloqueo` — solo la bandera en memoria del proceso: es lo que
+      corta la emisión de órdenes, y no hace I/O.
+    * `ms_persistencia` — solo el compare-and-set en `kill_switch_state`
+      (cuando la base responde: ahí está la red local y el `commit`).
+    * `ms_liquidacion` — solo la llamada al `BrokerGateway`. En esta fase
+      es `SimulatedBrokerGateway`; contra IB real **no se ha medido**
+      (Ítem 12 pendiente).
+    """
 
     primera_vez: bool
     ms_bloqueo: float
+    ms_persistencia: float
     ms_liquidacion: float
     ordenes: int
     liquidacion_estado: str
@@ -311,7 +324,10 @@ class KillSwitchEngine:
         memoria_nueva = self._banda.activar()
         ms_bloqueo = (time.monotonic() - inicio) * 1000.0
 
-        # (b) Compare-and-set en la base: mejor esfuerzo.
+        # (b) Compare-and-set en la base: mejor esfuerzo. Se cronometra
+        # APARTE de la bandera: son dos cosas distintas y medirlas juntas
+        # esconde cuánto cuesta cada una (informe §4).
+        inicio_cas = time.monotonic()
         persistencia_ok = True
         primera_vez = memoria_nueva
         try:
@@ -321,6 +337,7 @@ class KillSwitchEngine:
         except Exception as exc:  # noqa: BLE001 — la base no puede frenar el pánico
             persistencia_ok = False
             logger.error("No se pudo persistir el bloqueo del Kill-Switch: %s", exc)
+        ms_persistencia = (time.monotonic() - inicio_cas) * 1000.0
 
         if not primera_vez:
             # Ya estaba activo (en la base, o en este proceso): no se liquida
@@ -328,6 +345,7 @@ class KillSwitchEngine:
             return ResultadoDisparo(
                 primera_vez=False,
                 ms_bloqueo=ms_bloqueo,
+                ms_persistencia=ms_persistencia,
                 ms_liquidacion=0.0,
                 ordenes=0,
                 liquidacion_estado="NINGUNA",
@@ -358,6 +376,7 @@ class KillSwitchEngine:
             "origen": origen,
             "persistencia_ok": persistencia_ok,
             "ms_bloqueo": round(ms_bloqueo, 3),
+            "ms_persistencia": round(ms_persistencia, 3),
             "ms_liquidacion": round(ms_liquidacion, 3),
             "ordenes_simuladas": ordenes,
             "liquidacion_estado": estado_liquidacion,
@@ -399,6 +418,7 @@ class KillSwitchEngine:
         return ResultadoDisparo(
             primera_vez=True,
             ms_bloqueo=ms_bloqueo,
+            ms_persistencia=ms_persistencia,
             ms_liquidacion=ms_liquidacion,
             ordenes=ordenes,
             liquidacion_estado=estado_liquidacion,

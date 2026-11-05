@@ -133,11 +133,18 @@ class KillSwitchSalida(_Salida):
 
 
 class DisparoSalida(KillSwitchSalida):
-    """Respuesta de `POST /api/kill-switch`: estado + métricas del disparo."""
+    """Respuesta de `POST /api/kill-switch`: estado + métricas del disparo.
+
+    Las tres latencias miden cosas distintas y ninguna incluye a la otra
+    (informe §4): `ms_bloqueo` es la bandera en memoria, `ms_persistencia`
+    el compare-and-set en la base y `ms_liquidacion` la llamada al broker —
+    **simulado** en esta fase; contra IB real no se ha medido (Ítem 12).
+    """
 
     #: False si ya estaba activo (idempotencia: no se liquidó dos veces).
     primera_vez: bool
     ms_bloqueo: float
+    ms_persistencia: float
     ms_liquidacion: float
     ordenes_simuladas: int
     persistencia_ok: bool

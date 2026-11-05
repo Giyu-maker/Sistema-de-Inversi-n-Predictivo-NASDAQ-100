@@ -126,10 +126,17 @@ export const esquemaKillSwitch = z.object({
   reinicio_en: z.number().int().nullable(),
 })
 
-/** Respuesta de `POST /api/kill-switch`: estado + métricas del disparo. */
+/**
+ * Respuesta de `POST /api/kill-switch`: estado + métricas del disparo.
+ *
+ * Las tres latencias miden cosas distintas (informe §4): `ms_bloqueo` es la
+ * bandera en memoria, `ms_persistencia` el compare-and-set en la base y
+ * `ms_liquidacion` la llamada al broker — **simulado** en esta fase.
+ */
 export const esquemaDisparo = esquemaKillSwitch.extend({
   primera_vez: z.boolean(),
   ms_bloqueo: z.number(),
+  ms_persistencia: z.number(),
   ms_liquidacion: z.number(),
   ordenes_simuladas: z.number().int(),
   persistencia_ok: z.boolean(),

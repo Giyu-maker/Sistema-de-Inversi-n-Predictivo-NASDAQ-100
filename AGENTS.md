@@ -171,7 +171,7 @@ Flujo: `Twelve Data API (QQQ) → IngestionEngine (M2) → InfluxDB (M2) → Loc
   - **C5 `c773e21` — UI:** control en la cabecera a **2 toques**, chip `ROJO` con ícono propio y parpadeo lento apagado por `prefers-reduced-motion`, esquemas Zod y escenario `kill-switch-activo`.
   - **C6 — cierre:** CR-005 y CR-006, `docs/runbook-broker.md` (RF-801), `docs/informe-sprint4.md`.
   - **Recorte de alcance aprobado:** S4.2 (login y roles) **eliminado** → reinicio con clave de reinicio; S4.4 **reducido** a pruebas de integración. Brechas en CR-006: sin usuarios/roles/TOTP/CSRF, sin TLS, reinicio sin identidad personal (RF-503), rutas GET abiertas.
-  - **Cifras:** 876 pruebas Python + 47 de frontend en verde; RNF-010 p95 2,56 ms (pulsación→respuesta), 0,004 ms (bloqueo con CAS real), 0,005 ms (liquidación).
+  - **Cifras:** 878 pruebas Python + 47 de frontend en verde. **RNF-010 desglosado** (informe §4, cada cifra mide un paso distinto y no se suman): banda en memoria p95 **0,004 ms** · compare-and-set contra **PostgreSQL real** p50 **7,81** / p95 **11,83 ms** · liquidación p95 **0,038 ms** contra **`SimulatedBrokerGateway` simulado** (contra IB real **sin medir**, Ítem 12) · pulsación→respuesta HTTP p95 **1,66 ms** con dobles y **40,06 ms** con PostgreSQL real (sin el `INSERT` de auditoría).
   - **Pendiente del Sprint 4:** Ítem 11 (notificaciones SMS/SMTP), Ítem 12 real (IB por TCP), Ítem 13 (reportes PDF/CSV), TLS, TOTP, RF-204 y la verificación física en M1.
 
 ## 15. Modelo de desarrollo y despliegue
