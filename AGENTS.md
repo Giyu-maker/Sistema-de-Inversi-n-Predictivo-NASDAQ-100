@@ -150,6 +150,14 @@ Flujo: `Twelve Data API (QQQ) → IngestionEngine (M2) → InfluxDB (M2) → Loc
 
 ## 14. Estado actual del proyecto
 
+**Estado global (05/11/2026): Sprints 1–4 cerrados.** Toda la evidencia se
+enlaza desde **`docs/informe-final.md`** (índice) y el estado
+**requisito por requisito** —con archivo, test o informe que lo respalda—
+está en **`docs/matriz-cumplimiento.md`**: **15 Cumple · 21 Parcial ·
+0 No cumple · 3 Futuro** de los 39 requisitos del SRS v1.1. «Parcial»
+significa verificación con datos inyectados, broker simulado o sin
+observación en vivo; nunca «hecho».
+
 - **Sprint 1 (Planeación) — COMPLETADO.** SRS v1.0 y SDD v1.0 aprobados (este archivo se basa en ellos).
 - **Sprint 2 (Walking Skeleton) — COMPLETADO (cierre 17/10/2026, tag `sprint-2-cierre`).**
   - Ítem 4: Docker Compose con PostgreSQL 16 e InfluxDB 2.7 en M2, ambos `healthy` y expuestos **solo en loopback** (`127.0.0.1`), más encriptación AES-256-GCM de credenciales en reposo (`src/security/crypto.py`).
