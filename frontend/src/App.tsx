@@ -12,6 +12,7 @@ import { lazy, Suspense } from 'react'
 
 import { Cabecera } from './components/cabecera.tsx'
 import { Historial } from './components/historial.tsx'
+import { Reportes } from './components/reportes.tsx'
 import { Rendimiento } from './components/rendimiento.tsx'
 import { TarjetaSenal } from './components/tarjeta-senal.tsx'
 import { bannerPruebas } from './api/pruebas.ts'
@@ -76,6 +77,13 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* RF-702: sección colapsable, independiente del estado del latido
+            (descargar un reporte no depende de que la última vela haya
+            llegado). */}
+        <div className="mt-4">
+          <Reportes />
+        </div>
       </main>
     </div>
   )

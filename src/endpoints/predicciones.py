@@ -101,7 +101,7 @@ def predicciones(
         ) from exc
 
     avisos: list[str] = []
-    resultados = _resultados_en_lote(filas, estado, avisos)
+    resultados = resultados_en_lote(filas, estado, avisos)
     return PrediccionPaginaSalida(
         predicciones=[
             a_prediccion_salida(fila, resultados.get(fila.prediction_time))
@@ -147,10 +147,15 @@ def _resultado_de_unico(
     )
 
 
-def _resultados_en_lote(
+def resultados_en_lote(
     filas: list[PrediccionGuardada], estado: EstadoAplicacion, avisos: list[str]
 ) -> dict[int, ResultadoReal]:
-    """Una sola consulta a InfluxDB para toda la página."""
+    """Una sola consulta a InfluxDB para toda la página.
+
+    Pública porque el endpoint de reportes (RF-702) calcula el resultado real
+    de la misma manera: una sola implementación del contraste predicción vs.
+    precio, no dos que puedan discrepar.
+    """
     if not filas:
         return {}
     try:

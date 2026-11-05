@@ -47,6 +47,22 @@ _LISTAR = """
     LIMIT %s OFFSET %s
 """
 
+#: Mismo listado acotado a un rango de tiempo (reportes, RF-702). El rango es
+#: sobre `prediction_time`, que es el cierre de la última vela de la ventana
+#: (decisión D2): es la fecha de sesión, no el reloj de la máquina.
+_LISTAR_RANGO = """
+    SELECT id, prediction_time, trend_prediction, confidence_score, technical_rationale
+    FROM ai_predictions
+    WHERE prediction_time >= %s AND prediction_time < %s
+    ORDER BY prediction_time DESC
+    LIMIT %s OFFSET %s
+"""
+
+_CONTAR_RANGO = (
+    "SELECT count(*) FROM ai_predictions "
+    "WHERE prediction_time >= %s AND prediction_time < %s"
+)
+
 _CONTAR = "SELECT count(*) FROM ai_predictions"
 
 
@@ -82,6 +98,12 @@ class RepositorioPredicciones(Protocol):
 
     def listar(self, limit: int, offset: int) -> tuple[list[PrediccionGuardada], int]:
         """Página (orden descendente) y total de filas."""
+        ...
+
+    def listar_rango(
+        self, desde_ms: int, hasta_ms: int, limit: int, offset: int
+    ) -> tuple[list[PrediccionGuardada], int]:
+        """Predicciones con `desde_ms <= prediction_time < hasta_ms` (RF-702)."""
         ...
 
 
@@ -148,5 +170,16 @@ class PrediccionesPostgres:
                 cur.execute(_LISTAR, (limit, offset))
                 filas = cur.fetchall()
                 cur.execute(_CONTAR)
+                total = int(cur.fetchone()[0])
+        return [_fila(fila) for fila in filas], total
+
+    def listar_rango(
+        self, desde_ms: int, hasta_ms: int, limit: int, offset: int
+    ) -> tuple[list[PrediccionGuardada], int]:
+        with pg.conexion(self._dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(_LISTAR_RANGO, (desde_ms, hasta_ms, limit, offset))
+                filas = cur.fetchall()
+                cur.execute(_CONTAR_RANGO, (desde_ms, hasta_ms))
                 total = int(cur.fetchone()[0])
         return [_fila(fila) for fila in filas], total

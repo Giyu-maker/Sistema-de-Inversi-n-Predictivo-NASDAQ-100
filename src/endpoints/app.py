@@ -18,6 +18,7 @@ from src.endpoints import (
     kill_switch,
     predicciones,
     rendimiento,
+    reportes,
     salud,
     velas,
 )
@@ -46,7 +47,9 @@ def crear_app(estado_inicial: EstadoAplicacion | None = None) -> FastAPI:
     """
     app = FastAPI(title=TITULO, version=VERSION, description=DESCRIPCION)
     instalar_manejadores(app)
-    for paquete in (salud, estado, velas, predicciones, rendimiento, calidad, kill_switch):
+    for paquete in (
+        salud, estado, velas, predicciones, rendimiento, calidad, kill_switch, reportes
+    ):
         app.include_router(paquete.router)
     # None = "construir desde el entorno al primer request" (ver estado_app).
     app.state.riTech = estado_inicial

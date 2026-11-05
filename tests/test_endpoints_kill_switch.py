@@ -478,6 +478,12 @@ class TestLatenciaConPostgresReal:
     def test_pulsacion_a_respuesta_contra_postgres_real(self, cliente_real) -> None:
         import time
 
+        # Arranca desde «inactivo» pase lo que pase con el orden de los
+        # tests: la primera muestra exige `primera_vez = True` y una base
+        # heredada con el bloqueo activo la haría fallar sin ser un defecto.
+        cliente_real.repo.reiniciar(ahora_ms=AHORA_MS, sesion=SESION_DIA)
+        cliente_real.banda.liberar()
+
         muestras: list[float] = []
         for _ in range(10):
             inicio = time.perf_counter()

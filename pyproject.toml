@@ -35,6 +35,7 @@ dependencies = [
 # (decisión §15).
 ai = [
     "fastapi>=0.115",
+    "fpdf2>=2.8",
     "uvicorn[standard]>=0.32",
 ]
 

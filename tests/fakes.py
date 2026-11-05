@@ -155,6 +155,17 @@ class PrediccionesFalso:
         ordenadas = sorted(self.filas, key=lambda f: f.prediction_time, reverse=True)
         return ordenadas[offset:offset + limit], len(ordenadas)
 
+    def listar_rango(
+        self, desde_ms: int, hasta_ms: int, limit: int, offset: int
+    ) -> tuple[list[PrediccionGuardada], int]:
+        if self.error:
+            raise self.error
+        dentro = [
+            f for f in self.filas if desde_ms <= f.prediction_time < hasta_ms
+        ]
+        ordenadas = sorted(dentro, key=lambda f: f.prediction_time, reverse=True)
+        return ordenadas[offset:offset + limit], len(ordenadas)
+
 
 class ConfiguracionesFalso:
     def __init__(
@@ -313,6 +324,7 @@ def estado_de_prueba(
     configuraciones: ConfiguracionesFalso | None = None,
     cliente_ia: ClienteIaFalso | None = None,
     motor: MotorKillSwitchFalso | KillSwitchEngine | None = None,
+    auditoria: AuditoriaFalsa | None = None,
     ahora: datetime = AHORA_EN_SESION,
     feriados: frozenset[date] = frozenset(),
     banda_stable_pct: float = 0.1,
@@ -326,6 +338,7 @@ def estado_de_prueba(
         ),
         cliente_ia=cliente_ia if cliente_ia is not None else ClienteIaFalso(),
         motor_kill_switch=motor if motor is not None else MotorKillSwitchFalso(),
+        auditoria=auditoria if auditoria is not None else AuditoriaFalsa(),
         ahora=lambda: ahora,
         feriados=feriados,
         banda_stable_pct=banda_stable_pct,
@@ -506,3 +519,61 @@ class TransaccionesFalsas:
         self._si_roto()
         return [], 0
 
+
+
+
+class AuditoriaFalsa:
+    """`LectorAuditoria` en memoria con el mismo contrato (RF-701/RF-702)."""
+
+    def __init__(self, registros: list | None = None) -> None:
+        self.registros = list(registros or [])
+
+    def listar(self, filtro):
+        from src.database.auditoria import RegistroAuditoria
+
+        dentro = [
+            r for r in self.registros
+            if filtro.desde_ms <= r.timestamp < filtro.hasta_ms
+            and (filtro.actor is None or r.actor == filtro.actor)
+            and (filtro.accion is None or r.action == filtro.accion)
+            and (filtro.acciones is None or r.action in filtro.acciones)
+        ]
+        dentro.sort(key=lambda r: (r.timestamp, r.id), reverse=True)
+        return dentro[filtro.offset:filtro.offset + filtro.limit], len(dentro)
+
+    def resumen(self, desde_ms: int, hasta_ms: int):
+        from src.database.auditoria import ResumenAuditoria
+
+        agrupadas: dict[tuple[str, str], list[int]] = {}
+        for r in self.registros:
+            if not (desde_ms <= r.timestamp < hasta_ms):
+                continue
+            agrupadas.setdefault((r.action, r.actor), []).append(r.timestamp)
+        return [
+            ResumenAuditoria(
+                accion=accion, actor=actor, registros=len(tiempos),
+                primera=min(tiempos), ultima=max(tiempos),
+            )
+            for (accion, actor), tiempos in sorted(agrupadas.items())
+        ]
+
+
+def registro_auditoria(
+    timestamp: int,
+    action: str = "KILL_SWITCH_TRIGGERED",
+    actor: str = "OPERADOR",
+    ip: str = "127.0.0.1",
+    payload: str | None = None,
+):
+    """Fila de `audit_logs` para los dobles (mismo shape que la real)."""
+    from src.database.auditoria import RegistroAuditoria
+
+    return RegistroAuditoria(
+        id=f"reg-{timestamp}-{action}",
+        timestamp=timestamp,
+        actor=actor,
+        action=action,
+        ip_address=ip,
+        payload=payload,
+        user_id=None,
+    )

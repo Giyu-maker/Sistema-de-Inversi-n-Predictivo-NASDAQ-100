@@ -23,6 +23,7 @@ from fastapi import Request
 from influxdb_client import InfluxDBClient
 
 from src.ai.client import ErrorDeInferencia, InferenceClient
+from src.database.auditoria import LectorAuditoria, LectorAuditoriaPostgres
 from src.database.configuraciones import (
     ConfiguracionSistema,
     ConfiguracionesPostgres,
@@ -112,6 +113,10 @@ class EstadoAplicacion:
     #: `estado_desde_entorno`). `None` NO significa «desactivado»: quien lo
     #: consume debe tratarlo como estado no verificado.
     motor_kill_switch: KillSwitchEngine | None = None
+    #: Lector de `audit_logs` para el visor (D4) y los reportes (D2).
+    #: `None` = «no configurado»: los consumidores responden 503, nunca
+    #: fingen una lista vacía.
+    auditoria: LectorAuditoria | None = None
     cache_ia: Cache = field(init=False)
     cache_calidad: Cache = field(init=False)
 
@@ -171,6 +176,7 @@ def estado_desde_entorno() -> EstadoAplicacion:
         cache_ia_s=float(os.environ.get("CACHE_IA_S", "5")),
         cache_calidad_s=float(os.environ.get("CACHE_CALIDAD_S", "60")),
         motor_kill_switch=motor_desde_entorno(lector),
+        auditoria=LectorAuditoriaPostgres(),
     )
 
 
