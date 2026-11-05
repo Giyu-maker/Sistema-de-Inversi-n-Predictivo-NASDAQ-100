@@ -9,6 +9,8 @@ y en el esquema.
 from __future__ import annotations
 
 import os
+import threading
+import time
 from datetime import date
 from pathlib import Path
 
@@ -702,3 +704,126 @@ class TestLatenciasRnf010:
         # el CAS con dobles también. Lo importante es que existan por
         # separado: `ms_persistencia` no formaba parte del resultado antes.
         assert broker.liquidaciones == 1
+
+
+class TestNotificacionDelDisparo:
+    """SS-11: el aviso es el paso (e) y jamás puede frenar los pasos (a)-(d)."""
+
+    class _Canal:
+        """Canal que registra lo que recibe, sin enviar nada."""
+
+        def __init__(self) -> None:
+            self.recibidos: list = []
+
+        def enviar(self, aviso) -> None:
+            self.recibidos.append(aviso)
+
+    class _Caido:
+        """Canal SMTP caído: lanza en el primer envío."""
+
+        def __init__(self) -> None:
+            self.intentos = 0
+
+        def enviar(self, aviso) -> None:
+            self.intentos += 1
+            raise ConnectionRefusedError("correo caído")
+
+    class _Lento:
+        """Canal que se queda dentro de `enviar` hasta que se le diga."""
+
+        def __init__(self) -> None:
+            self.entro = threading.Event()
+            self.suelta = threading.Event()
+
+        def enviar(self, aviso) -> None:
+            self.entro.set()
+            self.suelta.wait(timeout=5)
+
+    def _disparar(self, canal):
+        repo = RepoKillSwitchFalso()
+        auditor = AuditorKillSwitchFalso()
+        banda = BanderaBloqueo()
+        motor = KillSwitchEngine(
+            repo, BrokerKillSwitchFalso(), auditor,
+            banda=banda, ahora_ms=lambda: 1_800_000_000_000, notificador=canal,
+        )
+        resultado = motor.execute_global_liquidation(
+            motivo="Pérdida de sesión de 1,40 % (límite 1,25 %).",
+            origen="AUTOMATICO", actor="SISTEMA", ip_address="127.0.0.1",
+        )
+        assert motor.esperar_notificaciones(timeout_s=5) is True
+        return motor, repo, auditor, resultado
+
+    def test_con_el_correo_caido_el_disparo_completa(self) -> None:
+        # LA regla crítica: nada del Kill-Switch depende del envío.
+        canal = self._Caido()
+        motor, repo, auditor, resultado = self._disparar(canal)
+
+        assert resultado.primera_vez is True
+        assert repo.fila.activo is True, "el bloqueo quedó puesto"
+        assert resultado.liquidacion_estado == "COMPLETADA"
+        assert canal.intentos == 1, "sí se intentó enviar"
+
+        acciones = [e.action for e in auditor.eventos]
+        assert "KILL_SWITCH_TRIGGERED" in acciones, acciones
+        assert "NOTIFICACION_FALLIDA" in acciones, acciones
+        fallo = next(e for e in auditor.eventos if e.action == "NOTIFICACION_FALLIDA")
+        assert "correo caído" in fallo.payload["fallo"]
+
+    def _orden_de_eventos(self, auditor) -> list[str]:
+        return [e.action for e in auditor.eventos]
+
+    def test_la_notificacion_va_despues_de_la_auditoria_del_disparo(self) -> None:
+        # (a)-(d) antes que (e): el registro del disparo tiene que existir
+        # antes que el del envío.
+        _, _, auditor, _ = self._disparar(self._Canal())
+        acciones = self._orden_de_eventos(auditor)
+        assert acciones.index("KILL_SWITCH_TRIGGERED") < acciones.index(
+            "NOTIFICACION_ENVIADA"
+        ), acciones
+
+    def test_el_aviso_lleva_el_texto_del_backend(self) -> None:
+        canal = self._Canal()
+        self._disparar(canal)
+
+        aviso = canal.recibidos[0]
+        assert aviso.origen == "kill-switch"
+        assert "Kill-Switch" in aviso.asunto
+        assert "Pérdida de sesión de 1,40 %" in aviso.cuerpo
+        assert "hasta que un administrador" in aviso.cuerpo
+
+    def test_un_canal_lento_no_retrasa_el_disparo(self) -> None:
+        # El paso (e) corre en su propio hilo: el disparo devuelve mientras
+        # el correo sigue dentro de `enviar`.
+        canal = self._Lento()
+        repo = RepoKillSwitchFalso()
+        motor = KillSwitchEngine(
+            repo, BrokerKillSwitchFalso(), AuditorKillSwitchFalso(),
+            banda=BanderaBloqueo(), ahora_ms=lambda: 1, notificador=canal,
+        )
+
+        inicio = time.monotonic()
+        resultado = motor.execute_global_liquidation(
+            motivo="x", origen="MANUAL", actor="OPERADOR", ip_address="127.0.0.1",
+        )
+        transcurrido = time.monotonic() - inicio
+
+        assert resultado.primera_vez is True
+        assert transcurrido < 1.0, f"el disparo esperó al canal: {transcurrido:.3f} s"
+        assert repo.fila.activo is True
+
+        canal.suelta.set()  # se libera el hilo antes de terminar el test
+        assert motor.esperar_notificaciones(timeout_s=5) is True
+
+    def test_sin_notificador_no_se_registra_nada_de_notificacion(self) -> None:
+        repo = RepoKillSwitchFalso()
+        auditor = AuditorKillSwitchFalso()
+        motor = KillSwitchEngine(
+            repo, BrokerKillSwitchFalso(), auditor,
+            banda=BanderaBloqueo(), ahora_ms=lambda: 1,
+        )
+        motor.execute_global_liquidation(
+            motivo="x", origen="MANUAL", actor="OPERADOR", ip_address="127.0.0.1"
+        )
+        assert [e.action for e in auditor.eventos] == ["KILL_SWITCH_TRIGGERED"]
+        assert motor._hilos_notificacion == []

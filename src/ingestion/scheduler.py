@@ -43,8 +43,9 @@ from src.ai.prediccion import VELAS_A_CONSULTAR, a_candle, predecir_y_persistir
 from src.calculator.asymmetric import AsymmetricCalculator
 from src.database.predictions import RepositorioPredicciones
 from src.ingestion.engine import IngestionEngine, NasdaqCandle, parse_raw_candle
-from src.ingestion.huecos import CuotaBasica, recuperar_hueco
+from src.ingestion.huecos import MOTIVOS_BRECHA, CuotaBasica, recuperar_hueco
 from src.security.auditoria import IP_LOCAL
+from src.integration.notificaciones import AvisadorBrechas, avisador_desde_entorno
 from src.security.kill_switch import KillSwitchEngine, motor_desde_entorno
 from src.utils.mercado import ahora_ny, feriados_operativos, ventana_de_consulta
 
@@ -87,6 +88,7 @@ class IngestionScheduler:
         cuota: CuotaBasica | None = None,
         feriados: frozenset[date] | None = None,
         kill_switch: KillSwitchEngine | None = None,
+        avisador: AvisadorBrechas | None = None,
     ) -> None:
         self.engine = engine
         self.calculator = calculator
@@ -98,6 +100,9 @@ class IngestionScheduler:
         # motor no hay disparo, y el ciclo de datos sigue siendo útil: es el
         # mismo criterio de «paso completo o no se configura» del paso de IA.
         self.kill_switch = kill_switch
+        #: Aviso de brecha de datos (SS-11): `None` = sin canal configurado.
+        #: Como máximo una vez por sesión, dentro del propio avisador.
+        self.avisador = avisador
         # Recuperación de huecos (Fase B2.5): corre en el primer tick — es
         # decir, al arrancar — y en cada tick posterior. La cuota se crea aquí
         # para que sus ventanas duren lo que dura el proceso.
@@ -236,17 +241,37 @@ class IngestionScheduler:
             )
         except Exception as exc:  # noqa: BLE001 — un hueco no puede tumbar la cadencia
             logger.error("Recuperación de huecos falló: %s", exc)
+            self._avisar_brecha("error-recuperacion", str(exc))
             return
         if informe.motivo == "recuperado":
             logger.warning(
                 "Hueco recuperado: %s · escritas %d, omitidas %d (1 crédito).",
                 informe.detalle, informe.escritas, informe.omitidas,
             )
+        elif informe.motivo in MOTIVOS_BRECHA:
+            # Hay un hueco real que no se llenó (SS-11): se avisa como mucho
+            # una vez por sesión y el ciclo sigue sin esperar el envío.
+            logger.warning(
+                "Brecha de datos sin recuperar (%s): %s",
+                informe.motivo, informe.detalle,
+            )
+            self._avisar_brecha(informe.motivo, informe.detalle)
         elif informe.motivo not in ("sin-hueco", "fuera-de-sesion"):
             logger.info(
                 "Recuperación de huecos sin acción (%s): %s",
                 informe.motivo, informe.detalle,
             )
+
+    def _avisar_brecha(self, motivo: str, detalle: str) -> None:
+        """Best-effort: el aviso jamás puede frenar el ciclo del scheduler."""
+        if self.avisador is None:
+            return
+        try:
+            self.avisador.avisar(
+                fecha=ahora_ny().date(), motivo=motivo, detalle=detalle
+            )
+        except Exception as exc:  # noqa: BLE001 — SS-11: no bloquea nada
+            logger.error("No se pudo avisar la brecha de datos: %s", exc)
 
     def _predecir(self) -> None:
         """Paso de IA: ventana de la sesión → M1 → `ai_predictions`.
@@ -358,6 +383,8 @@ def main() -> None:
         # Mismo motor que el API (RF-501): siembra, volcado pendiente y el
         # disparo automático del −1,25 % de la sesión en cada tick.
         kill_switch=motor_desde_entorno(lector),
+        # SS-11: aviso de brecha de datos, como mucho una vez por sesión.
+        avisador=avisador_desde_entorno(),
     )
     asyncio.run(scheduler.run())
 

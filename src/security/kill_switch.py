@@ -64,6 +64,13 @@ from src.database.kill_switch import (
 )
 from src.database.transacciones import TransaccionesPostgres
 from src.integration.broker import BrokerGateway, SimulatedBrokerGateway
+from src.integration.notificaciones import (
+    ASUNTOS,
+    Aviso,
+    Notificador,
+    fabricar_desde_entorno,
+    notificar_mejor_esfuerzo,
+)
 from src.security.auditoria import (
     AuditoriaPostgres,
     EventoAuditoria,
@@ -191,6 +198,7 @@ class KillSwitchEngine:
         cola: ColaAuditoriaPendiente | None = None,
         banda: BanderaBloqueo | None = None,
         ahora_ms: Callable[[], int] | None = None,
+        notificador: Notificador | None = None,
     ) -> None:
         self._repo = repo
         self._broker = broker
@@ -198,6 +206,11 @@ class KillSwitchEngine:
         self._cola = cola if cola is not None else ColaAuditoriaPendiente()
         self._banda = banda if banda is not None else BLOQUEO
         self._ahora_ms = ahora_ms
+        #: Canal de notificaciones del paso (e). `None` = no se notifica.
+        self._notificador = notificador
+        #: Hilos de notificación en vuelo: se guardan para que los tests
+        #: puedan esperarlos y para que el proceso no los pierda de vista.
+        self._hilos_notificacion: list[threading.Thread] = []
 
     def _ahora(self) -> int:
         if self._ahora_ms is not None:
@@ -415,6 +428,19 @@ class KillSwitchEngine:
         if not auditoria_ok:
             detalle += " El registro de auditoría quedó pendiente de volcado."
 
+        # (e) Notificación: DESPUÉS de todo lo demás, en su propio hilo y en
+        # el mejor de los casos. Regla crítica de FASE D: un SMTP colgado no
+        # puede retrasar ni el bloqueo ni la respuesta del disparo.
+        self._notificar(
+            motivo=motivo,
+            origen=origen,
+            detalle=detalle,
+            estado_liquidacion=estado_liquidacion,
+            ordenes=ordenes,
+            actor=actor,
+            ip_address=ip_address,
+        )
+
         return ResultadoDisparo(
             primera_vez=True,
             ms_bloqueo=ms_bloqueo,
@@ -426,6 +452,69 @@ class KillSwitchEngine:
             auditoria_ok=auditoria_ok,
             detalle=detalle,
         )
+
+    def _notificar(
+        self,
+        *,
+        motivo: str,
+        origen: str,
+        detalle: str,
+        estado_liquidacion: str,
+        ordenes: int,
+        actor: str,
+        ip_address: str,
+    ) -> None:
+        """Paso (e): aviso en un hilo aparte, solo si hay canal configurado.
+
+        El aviso se arma aquí (con el texto que ya tiene el backend) y se
+        entrega a `notificar_mejor_esfuerzo`, que envía y registra el
+        resultado en `audit_logs`. Todo dentro de un hilo daemon: la
+        respuesta del disparo no espera ni al correo más lento.
+        """
+        if self._notificador is None:
+            return
+        ahora = self._ahora()
+        cuerpo = (
+            "Se activó el Kill-Switch del sistema RiTech NASDAQ-100.\n\n"
+            f"Motivo: {motivo}\n"
+            f"Origen: {'automático (pérdida de la sesión)' if origen == 'AUTOMATICO' else 'manual (panel)'}\n"
+            f"Hora: {fecha_hora(ahora)}\n"
+            f"Liquidación: {_EN_LLANO.get(estado_liquidacion, estado_liquidacion)} "
+            f"({ordenes} orden(es) simulada(s)).\n"
+            f"Detalle: {detalle}\n\n"
+            "El sistema permanece bloqueado hasta que un administrador de TI "
+            "o el gerente lo reinicie con la clave de reinicio."
+        )
+        aviso = Aviso(origen="kill-switch", asunto=ASUNTOS["kill-switch"], cuerpo=cuerpo)
+        contexto = {
+            "motivo": motivo,
+            "origen_disparo": origen,
+            "liquidacion_estado": estado_liquidacion,
+            "ordenes_simuladas": ordenes,
+        }
+
+        def _enviar() -> None:
+            notificar_mejor_esfuerzo(
+                self._notificador,
+                self._auditor,
+                aviso=aviso,
+                actor=actor,
+                ip_address=ip_address,
+                cola=self._cola,
+                contexto=contexto,
+            )
+
+        hilo = threading.Thread(
+            target=_enviar, name="notificacion-kill-switch", daemon=True
+        )
+        hilo.start()
+        self._hilos_notificacion.append(hilo)
+
+    def esperar_notificaciones(self, timeout_s: float = 5.0) -> bool:
+        """Espera a los avisos en vuelo (para pruebas y para un apagado limpio)."""
+        for hilo in self._hilos_notificacion:
+            hilo.join(timeout=timeout_s)
+        return all(not h.is_alive() for h in self._hilos_notificacion)
 
     def _marcar(self, estado: str, ahora_ms: int | None) -> bool:
         """Actualiza el estado de la liquidación. False si no se pudo (mejor esfuerzo)."""
@@ -584,6 +673,7 @@ def motor_desde_entorno(lector: LectorVelas, *, simbolo: str | None = None) -> K
         ),
         auditor=AuditoriaPostgres(),
         cola=ColaAuditoriaPendiente(os.environ.get("AUDITORIA_PENDIENTE_RUTA") or None),
+        notificador=fabricar_desde_entorno(),
     )
     try:
         if repo.sembrar_si_vacio():

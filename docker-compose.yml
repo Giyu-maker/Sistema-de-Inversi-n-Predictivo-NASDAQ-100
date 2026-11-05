@@ -170,6 +170,30 @@ services:
       retries: 3
       start_period: 10s
 
+  # ---------------------------------------------------------------------------
+  # SS-11 (FASE D): bandeja de desarrollo para ver los correos del sistema.
+  #
+  # Perfil `dev`: NO arranca con un `docker compose up -d` normal. Para la
+  # demo de notificaciones:
+  #
+  #     docker compose --profile dev up -d mailpit
+  #     # SMTP en 127.0.0.1:1025 (SMTP_HOST=127.0.0.1, SMTP_PUERTO=1025)
+  #     # Interfaz web en http://127.0.0.1:8025
+  #
+  # El API y el scheduler usan `network_mode: host`, así que alcanzan el
+  # SMTP por127.0.0.1 igual que cualquier proceso de la máquina. Es una
+  # pieza de DESARROLLO: en producción iría el SMTP real de la oficina
+  # (SRS §5.4) y esto no se levanta.
+  # ---------------------------------------------------------------------------
+  mailpit:
+    image: axllent/mailpit:v1.20
+    container_name: ritech-mailpit
+    profiles: [dev]
+    ports:
+      - "127.0.0.1:1025:1025"   # SMTP de prueba (lo que usa SMTP_HOST)
+      - "127.0.0.1:8025:8025"   # interfaz web para la demo
+    restart: unless-stopped
+
 volumes:
   pgdata:
     name: ritech-pgdata

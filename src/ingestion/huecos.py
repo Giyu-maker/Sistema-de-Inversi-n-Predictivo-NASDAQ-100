@@ -88,6 +88,14 @@ class CuotaBasica:
         self._consumos = [t for t in self._consumos if t > ahora - 86_400_000]
 
 
+#: Motivos que significan **brecha de datos que no se pudo recuperar**: hay
+#: un hueco real en la serie y no se llenó (cuota agotada, rango
+#: inválido o un payload que la fuente devolvió ilegible). Los demás —
+#: `recuperado`, `sin-hueco`, `fuera-de-sesion`, `sin-datos`— no son una
+#: brecha y no deben alarmar a nadie (ni generar un correo cada 5 min).
+MOTIVOS_BRECHA: frozenset[str] = frozenset({"sin-cuota", "sin-rango", "payload-invalido"})
+
+
 @dataclass(frozen=True)
 class InformeHueco:
     """Resultado de una pasada de recuperación (para el log y los tests)."""

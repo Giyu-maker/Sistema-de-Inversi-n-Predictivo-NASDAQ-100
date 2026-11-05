@@ -157,5 +157,54 @@ queda registrada, **no se hizo**.
 
 ---
 
+## 7. Notificaciones locales (SS-11)
+
+El sistema avisa por correo (SMTP real) y deja un registro en la bandeja
+de SMS **simulado**. Los avisos salen **después** de que el Kill-Switch
+ya está bloqueado y liquidado, en su propio hilo: **una notificación
+caída nunca frena ni retrasa el bloqueo** (la regla crítica de FASE D).
+El éxito o el fallo de cada envío queda en `audit_logs` con
+`NOTIFICACION_ENVIADA` o `NOTIFICACION_FALLIDA`.
+
+**Qué avisa:**
+
+| Aviso | Cuándo |
+|---|---|
+| Kill-Switch activado | al activarse (manual desde el panel o automático por la pérdida del 1,25 %) |
+| Brecha de datos sin recuperar | cuando la recuperación de huecos falla (cuota agotada, rango inválido o payload ilegible), **como máximo una vez por sesión** |
+
+**Ver la demo con Mailpit** (solo desarrollo; en producción va el SMTP de
+la oficina, SRS §5.4):
+
+```bash
+# 1) Levantar la bandeja (perfil dev: NO arranca en un `up -d` normal)
+docker compose --profile dev up -d mailpit
+
+# 2) Activar el canal en .env (no en el repositorio)
+#    SMTP_HABILITADO=true
+#    SMTP_HOST=127.0.0.1
+#    SMTP_PUERTO=1025
+#    SMTP_SSL=false
+#    SMTP_DE=ritech@localhost
+#    SMTP_PARA=operador@localhost
+docker compose up -d api        # para que el proceso tome el .env
+
+# 3) Interfaz web con los correos: http://127.0.0.1:8025
+# 4) Disparar el Kill-Switch desde el panel y mirar cómo llega el correo.
+```
+
+El **SMS simulado** no sale a ningún lado: escribe en
+`logs/sms-salida.jsonl`, y cada línea lleva `"simulado": true` con el
+motivo (no hay módem ni proveedor — brecha declarada en CR-007). Para
+activarlo: `SMS_SIMULADO_HABILITADO=true` en `.env`.
+
+**Si el correo no llega:** el sistema sigue funcionando igual. Mire
+`audit_logs` filtrando por `NOTIFICACION_FALLIDA`: ahí está el motivo
+(host caído, timeout, credenciales). No hace falta reiniciar nada por un
+aviso perdido.
+
+---
+
 *Complementos: `docs/despliegue.md` §9 (operación cotidiana) y §10 (fallos
-conocidos); `docs/informe-sprint4.md` (cómo se verificó todo esto).*
+conocidos); `docs/informe-sprint4.md` (cómo se verificó todo esto); el
+índice general está en `docs/informe-final.md`.*
