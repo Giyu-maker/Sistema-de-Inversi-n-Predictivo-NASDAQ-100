@@ -14,6 +14,7 @@ from fastapi import FastAPI
 
 from src.endpoints import (
     calidad,
+    auditoria,
     estado,
     kill_switch,
     predicciones,
@@ -48,7 +49,8 @@ def crear_app(estado_inicial: EstadoAplicacion | None = None) -> FastAPI:
     app = FastAPI(title=TITULO, version=VERSION, description=DESCRIPCION)
     instalar_manejadores(app)
     for paquete in (
-        salud, estado, velas, predicciones, rendimiento, calidad, kill_switch, reportes
+        salud, estado, velas, predicciones, rendimiento, calidad, kill_switch,
+        reportes, auditoria,
     ):
         app.include_router(paquete.router)
     # None = "construir desde el entorno al primer request" (ver estado_app).

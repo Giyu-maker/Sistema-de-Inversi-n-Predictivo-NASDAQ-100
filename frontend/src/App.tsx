@@ -10,6 +10,7 @@
  */
 import { lazy, Suspense } from 'react'
 
+import { Auditoria } from './components/auditoria.tsx'
 import { Cabecera } from './components/cabecera.tsx'
 import { Historial } from './components/historial.tsx'
 import { Reportes } from './components/reportes.tsx'
@@ -78,11 +79,12 @@ export default function App() {
           </div>
         )}
 
-        {/* RF-702: sección colapsable, independiente del estado del latido
-            (descargar un reporte no depende de que la última vela haya
-            llegado). */}
-        <div className="mt-4">
+        {/* RF-702 y RF-701: secciones colapsables, independientes del
+            estado del latido (leer auditoría o descargar un reporte no
+            depende de que la última vela haya llegado). */}
+        <div className="mt-4 space-y-4">
           <Reportes />
+          <Auditoria />
         </div>
       </main>
     </div>

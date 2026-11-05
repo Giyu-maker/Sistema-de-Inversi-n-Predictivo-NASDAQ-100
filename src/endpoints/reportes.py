@@ -52,7 +52,7 @@ from src.utils.reportes import (
     EncabezadoReporte,
     a_csv,
     a_pdf,
-    fecha_colombia,
+    fecha_hora,
     fecha_de_epoch_ny,
     fecha_ny,
     hora_ny,
@@ -95,7 +95,7 @@ def reporte(
             detail=f"Formato no válido: {formato!r} (válidos: {validos}).",
         )
 
-    dia_desde, dia_hasta = _resolver_rango(estado, desde, hasta)
+    dia_desde, dia_hasta = resolver_rango(estado, desde, hasta)
     desde_ms = apertura_ms(dia_desde)
     hasta_ms = apertura_ms(dia_hasta + timedelta(days=1)) - 1
 
@@ -140,7 +140,7 @@ def _fecha_o_none(texto: str | None, nombre: str) -> date | None:
         ) from exc
 
 
-def _resolver_rango(
+def resolver_rango(
     estado: EstadoAplicacion, desde: str | None, hasta: str | None
 ) -> tuple[date, date]:
     """Rango pedido o, si no hay, las últimas `SESIONES_POR_DEFECTO` sesiones.
@@ -152,7 +152,7 @@ def _resolver_rango(
     dia_hasta = _fecha_o_none(hasta, "hasta")
 
     if dia_desde is None and dia_hasta is None:
-        return _ultimas_sesiones(estado, SESIONES_POR_DEFECTO)
+        return ultimas_sesiones(estado, SESIONES_POR_DEFECTO)
     if dia_desde is None:
         dia_desde = dia_hasta
     if dia_hasta is None:
@@ -170,7 +170,7 @@ def _resolver_rango(
     return dia_desde, dia_hasta
 
 
-def _ultimas_sesiones(estado: EstadoAplicacion, cantidad: int) -> tuple[date, date]:
+def ultimas_sesiones(estado: EstadoAplicacion, cantidad: int) -> tuple[date, date]:
     """Primeras y últimas fechas de las últimas `cantidad` sesiones con datos.
 
     Sale de las velas que ya están en InfluxDB: «últimas 5 sesiones» quiere
@@ -314,7 +314,7 @@ def _columnas_kill_switch(
         payload = _como_dict(r.payload)
         filas.append(
             [
-                fecha_colombia(r.timestamp),
+                fecha_hora(r.timestamp),
                 r.action,
                 r.actor,
                 r.ip_address,
@@ -343,8 +343,8 @@ def _columnas_auditoria(
             fila.accion,
             fila.actor,
             fila.registros,
-            fecha_colombia(fila.primera),
-            fecha_colombia(fila.ultima),
+            fecha_hora(fila.primera),
+            fecha_hora(fila.ultima),
         ]
         for fila in resumen[:LIMITE_FILAS]
     ]

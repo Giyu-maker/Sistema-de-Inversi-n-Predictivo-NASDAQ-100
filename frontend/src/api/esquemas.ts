@@ -249,3 +249,31 @@ export type PrediccionUltima = z.infer<typeof esquemaPrediccionUltima>
 export type PrediccionPagina = z.infer<typeof esquemaPrediccionPagina>
 export type Rendimiento = z.infer<typeof esquemaRendimiento>
 export type CalidadModelo = z.infer<typeof esquemaCalidadModelo>
+
+
+// -- /api/auditoria (RF-701) -----------------------------------------------
+
+export const esquemaRegistroAuditoria = z.object({
+  id: z.string(),
+  timestamp: z.number().int(),
+  fecha: z.string(), // DD/MM/YYYY HH:mm:ss en hora de Colombia
+  actor: z.string(),
+  action: z.string(),
+  ip_address: z.string(),
+  payload: z.string().nullable(),
+})
+
+export const esquemaAuditoria = z.object({
+  registros: z.array(esquemaRegistroAuditoria),
+  total: z.number().int(),
+  limit: z.number().int(),
+  offset: z.number().int(),
+  desde: z.string(),
+  hasta: z.string(),
+  /** La manda el backend y la pinta la UI tal cual (RF-701). */
+  nota: z.string(),
+  avisos: z.array(z.string()),
+})
+
+export type RegistroAuditoria = z.infer<typeof esquemaRegistroAuditoria>
+export type Auditoria = z.infer<typeof esquemaAuditoria>

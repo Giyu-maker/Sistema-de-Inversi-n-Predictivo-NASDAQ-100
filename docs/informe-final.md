@@ -102,19 +102,25 @@ afecta a un requisito aprobado, su CR.
 ## 4. Cómo se verificó el proyecto
 
 ```bash
-# Backend (20 vivas se omiten solas sin el contenedor)
+# Backend (las vivas se omiten solas sin el contenedor)
 docker compose up -d postgres
-uv run --frozen --group ai --group ai-cpu pytest -q    # 878 pruebas
+uv run --frozen --group ai --group ai-cpu pytest -q    # 927 pruebas
 docker compose stop postgres
 
+# Demo manual de la inmutabilidad de `audit_logs` (RF-701): dos INSERT
+# aceptados y tres ERROR del trigger, cada ataque en su transacción con
+# ROLLBACK, sin dejar filas detrás.
+docker exec -i ritech-postgres16 sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+  < scripts/demo_inmutabilidad.sql
+
 # Frontend
-cd frontend && npm test && npm run lint && npm run build   # 47 pruebas
+cd frontend && npm test && npm run lint && npm run build   # 61 pruebas
 
 # Servicios (ver docs/despliegue.md §11.1)
 scripts/sesion.sh estado
 ```
 
-**Última corrida (05/11/2026):** 878 pruebas Python + 47 de frontend en
+**Última corrida (05/11/2026):** 927 pruebas Python + 61 de frontend en
 verde; `oxlint` y `vite build` sin avisos. Las mediciones de RNF-010 y de
 RNF-003 están en sus informes con la descripción exacta de qué mide cada
 cifra.

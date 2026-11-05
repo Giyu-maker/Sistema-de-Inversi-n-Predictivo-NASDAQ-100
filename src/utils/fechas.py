@@ -13,7 +13,7 @@ un contenedor lean mal la hora de mercado.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 #: Hora local del operador (Sala de trading, Colombia).
@@ -41,3 +41,26 @@ def fecha_iso_utc(ms: int) -> str:
     """Epoch ms → RFC3339 en UTC, que es lo que entiende Flux."""
     instante = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
     return instante.isoformat().replace("+00:00", "Z")
+
+
+def fecha_ny(epoch_ms: int) -> str:
+    """Epoch ms → `DD/MM/YYYY` en hora de Nueva York.
+
+    Es la fecha con la que se identifica una SESIÓN (el mercado abre a las
+    09:30 ET, no a la hora de Colombia): los reportes y el visor la usan
+    para agrupar y filtrar.
+    """
+    instante = datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc)
+    return instante.astimezone(ZONA_MERCADO).strftime("%d/%m/%Y")
+
+
+def hora_ny(epoch_ms: int) -> str:
+    """Epoch ms → `HH:MM` en hora de Nueva York (hora de la vela, ET)."""
+    instante = datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc)
+    return instante.astimezone(ZONA_MERCADO).strftime("%H:%M")
+
+
+def fecha_de_epoch_ny(epoch_ms: int) -> date:
+    """Fecha de sesión (ET) de un epoch ms, para agrupar por sesión."""
+    instante = datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc)
+    return instante.astimezone(ZONA_MERCADO).date()

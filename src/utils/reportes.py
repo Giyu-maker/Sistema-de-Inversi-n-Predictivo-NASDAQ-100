@@ -35,7 +35,12 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Iterable, Sequence
 
-from src.utils.fechas import ZONA_COLOMBIA, ZONA_MERCADO
+from src.utils.fechas import (
+    fecha_de_epoch_ny,
+    fecha_hora,
+    fecha_ny,
+    hora_ny,
+)
 
 #: Tipos de reporte aceptados por `GET /api/reportes/{tipo}`.
 TIPOS_REPORTE: tuple[str, ...] = ("senal", "rendimiento", "kill-switch", "auditoria")
@@ -75,26 +80,10 @@ TITULOS: dict[str, str] = {
 # -- fechas -----------------------------------------------------------------
 
 
-def fecha_ny(epoch_ms: int) -> str:
-    """`DD/MM/YYYY` de la fecha de **sesión** (America/New_York)."""
-    return datetime.fromtimestamp(epoch_ms / 1000, tz=ZONA_MERCADO).strftime("%d/%m/%Y")
 
 
-def hora_ny(epoch_ms: int) -> str:
-    """`HH:MM` en hora de Nueva York (la sesión se identifica en ET)."""
-    return datetime.fromtimestamp(epoch_ms / 1000, tz=ZONA_MERCADO).strftime("%H:%M")
 
 
-def fecha_colombia(epoch_ms: int) -> str:
-    """`DD/MM/YYYY HH:mm:ss` en hora de Colombia (marcas de auditoría)."""
-    return datetime.fromtimestamp(epoch_ms / 1000, tz=ZONA_COLOMBIA).strftime(
-        "%d/%m/%Y %H:%M:%S"
-    )
-
-
-def fecha_de_epoch_ny(epoch_ms: int) -> date:
-    """Fecha de sesión (ET) de un epoch ms, para agrupar por sesión."""
-    return datetime.fromtimestamp(epoch_ms / 1000, tz=ZONA_MERCADO).date()
 
 
 def rango_texto(desde: date, hasta: date) -> str:

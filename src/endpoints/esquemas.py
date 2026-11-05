@@ -242,3 +242,32 @@ class CalidadModeloSalida(_Salida):
     banda_stable_pct: float | None = None
     acierto_direccional: AciertoDireccionalSalida | None = None
     nota: str
+
+
+# -- /api/auditoria ---------------------------------------------------------
+
+class RegistroAuditoriaSalida(_Salida):
+    """Una fila de `audit_logs` con su fecha ya formateada (hora de Colombia)."""
+
+    id: str
+    timestamp: int  #: epoch ms
+    fecha: str  #: DD/MM/YYYY HH:mm:ss en hora de Colombia
+    actor: str
+    action: str
+    ip_address: str
+    payload: str | None  #: JSON como texto; la UI lo pinta tal cual
+
+
+class AuditoriaSalida(_Salida):
+    """Página del visor de auditoría (solo lectura, RF-701)."""
+
+    registros: list[RegistroAuditoriaSalida]
+    total: int
+    limit: int
+    offset: int
+    desde: str  #: AAAA-MM-DD
+    hasta: str  #: AAAA-MM-DD
+    #: La nota la manda el backend y la pinta la UI: la inmutabilidad es
+    #: una propiedad del sistema, no un eslogan de la interfaz.
+    nota: str
+    avisos: list[str] = Field(default_factory=list)
