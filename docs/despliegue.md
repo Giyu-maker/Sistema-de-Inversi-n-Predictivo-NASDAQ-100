@@ -520,11 +520,17 @@ la cabecera del panel. Cómo se verificó: `docs/informe-sprint4.md`.
 
 No forma parte de este despliegue:
 
-- **Ítem 11**: notificaciones SMS/SMTP (módem GSM por serie o SMTP local).
+- **Ítem 11 (parcial desde FASE D, CR-007)**: correo SMTP real y SMS
+  **simulado** (bandeja local rotulada como tal). Falta el SMS real:
+  módem GSM o proveedor. Variables `SMTP_*` / `SMS_*` en
+  `.env.m2.example`; bandeja de la demo con
+  `docker compose --profile dev up -d mailpit` (runbook §7).
 - **Ítem 12**: integración real con Interactive Brokers por TCP. Mientras
   tanto corre `SimulatedBrokerGateway`, que registra todo como
   `is_simulated = true` (RF-601/602).
-- **Ítem 13**: reportes financieros PDF/CSV (RF-702).
+- **Ítem 13 (parcial desde FASE D, CR-007)**: reportes PDF/CSV con cuatro
+  tipos (`GET /api/reportes/{tipo}`). Falta lo que pide RF-702: histórico
+  de posiciones cerradas, rendimiento acumulado y tasa agregada.
 - Autenticación de usuarios, roles y TOTP — **brecha declarada en CR-006**;
   el reinicio del Kill-Switch va con clave de reinicio.
 - TLS para InfluxDB en la intranet (§5).

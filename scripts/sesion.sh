@@ -2,7 +2,11 @@
 # Operación de la sesión completa sin intervención (prioridad lunes 26/10).
 #
 #   scripts/sesion.sh start    — inferencia en 2.º plano (log + PID), espera
-#                                /health y después `docker compose up -d`.
+#                                /health y después
+#                                `docker compose up -d --build` (reconstruye
+#                                las imágenes: el código que cambió en M2
+#                                tiene que entrar al contenedor, no quedarse
+#                                en la caché de la imagen anterior).
 #   scripts/sesion.sh stop     — apaga la inferencia y el stack de Docker.
 #   scripts/sesion.sh estado   — velas de hoy, última vela, última predicción
 #                                y errores recientes de los logs.
@@ -89,7 +93,10 @@ arrancar() {
   # prioridad sobre .env.local por el orden del env_file en compose).
   printf 'INFERENCE_URL=http://%s:%s\n' "$brillo" "$PUERTO" >.env.sesion
 
-  docker compose up -d
+  # `--build` a propósito (FASE D, D5): sin él, un cambio en `src/` no
+  # llega al contenedor si la etiqueta de la capa de código no cambia, y el
+  # panel hablaría con un backend viejo.
+  docker compose up -d --build
 
   local intento
   for intento in $(seq 1 30); do

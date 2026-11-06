@@ -375,7 +375,9 @@ siguiente sesión. Si es un gap (RF-203), el payload registra la pérdida
 - **Idempotencia del disparo:** el compare-and-set probado en vivo —una
   sola ganancia por activación—, más la prueba de «pulsar dos veces no
   liquidó dos veces» (el acumulado `liquidaciones` lo demuestra en la base).
-- **878 pruebas** en verde (`pytest -q`), 47 de frontend (`node --test`),
+- **878 pruebas** en verde (`pytest -q`), 47 de frontend (`node --test`) —
+  cifras del cierre del Sprint 4; la vigente al cerrar FASE D es **958 +
+  61** (ver matriz §5)
   `oxlint` y `vite build` sin avisos.
 - **Latencias RNF-010 con su desglose** (informe §4.1–§4.2): son **cuatro
   cifras de cuatro pasos distintos y ninguna incluye a otra** —
@@ -485,3 +487,147 @@ Junto con el Ítem 12 (IB real) o en el siguiente sprint, según decida la
 Gerencia: `trader_users` + sesiones + TOTP, rol de mínimo privilegio en
 PostgreSQL (deuda D4 de CR-004) y TLS. Hasta entonces, cualquier revisión
 de seguridad debe leer **esta** CR antes que el código.
+
+---
+
+## CR-007 — FASE D: reportes financieros (SS-13) y notificaciones locales (SS-11)
+
+| Campo | Valor |
+|---|---|
+| **Fecha de detección** | FASE D — 05/11/2026 (congelamiento de código 14/11/2026) |
+| **Solicitante** | Equipo de desarrollo (Naranja's Team) |
+| **Documentos afectados** | SRS §3.7.2 (**RF-702**), SRS §5.4 (interfaces de comunicaciones: alertas SMS y de correo), RNF-009 («alertar síncronamente al operador»), backlog Ítems 11 y 13 |
+| **Tipo** | Implementación parcial de dos ítems que figuraban como Futuro |
+| **Prioridad** | Alta (RF-702 es requisito funcional; las alertas son la única vía de aviso al operador) |
+| **Estado** | **Implementado y verificado en vivo** (PostgreSQL y Mailpit reales); pendiente de aprobación formal |
+
+### Contexto
+
+El backlog marcaba los Ítems 11 y 13 como **[ ] FUTURO** (D1 de esta fase)
+y la matriz los tenía como `Futuro` (SS-13/RF-702) y sin fila propia
+(SS-11, cuyo efecto cae en RNF-009 y SRS §5.4). FASE D los implementa
+**en parte**, y esta CR deja escrito exactamente qué parte y qué no.
+
+### Qué se implementó
+
+**SS-13 — Reportes (`GET /api/reportes/{tipo}`, RF-702)**
+
+| Pieza | Detalle |
+|---|---|
+| Tipos | `senal`, `rendimiento` (RF-201/RF-203), `kill-switch`, `auditoria` |
+| Formatos | CSV en **UTF-8 con BOM** y PDF con **fpdf2** (grupo `ai`) |
+| Rango | `desde`/`hasta` en `AAAA-MM-DD` de **sesión (ET)**; sin parámetros, **últimas 5 sesiones**; mal formado o invertido → 422; rango sin datos → archivo con cabecera y **0 filas** |
+| Cabecera | fecha de generación, rango con su zona, fuente (QQQ proxy, solo horario regular, CR-002), «**Datos de mercado reales; broker simulado**» y la métrica honesta del modelo leída de `GET /modelo` («sin ventaja direccional probada», o «no disponible» si M1 no responde) |
+| CSV | separador **`;`** (en es-CO la coma es separador decimal), números en coma decimal, **neutralización de fórmulas** (`=`, `+`, `-`, `@` iniciales → apóstrofo) **solo en texto**: un rendimiento de `-1,4` sigue siendo negativo |
+| PDF | fuentes base Latin-1; `_para_pdf()` normaliza `− ≥ → …` y comillas; una prueba genera un PDF con «Señales de la sesión, año 2026» |
+| UI | sección colapsable con selector de tipo, rango y dos botones de descarga (sin router ni dependencias nuevas) |
+
+**SS-11 — Notificaciones (`src/integration/notificaciones.py`, SRS §5.4)**
+
+| Pieza | Detalle |
+|---|---|
+| Interfaz | `Notificador` (Protocol) con SMTP real (`smtplib`, credenciales **solo en `.env`**), SMS **simulado** (bandeja `logs/sms-salida.jsonl` rotulada `"simulado": true`), nulo y compuesto |
+| Disparadores | activación del Kill-Switch (manual o automática) y **brecha de datos sin recuperar** (cuota/rango/payload), como máximo **una vez por sesión** |
+| Regla crítica | el aviso sale **después** de bandera → CAS → liquidación → auditoría, en un **hilo daemon**; su éxito o fallo queda en `audit_logs` como `NOTIFICACION_ENVIADA` / `NOTIFICACION_FALLIDA` |
+| Demo | servicio **Mailpit** con `profiles: [dev]` (SMTP `127.0.0.1:1025`, UI `127.0.0.1:8025`), documentado en `docs/runbook-broker.md` §7 |
+
+### Qué NO se implementó (brechas)
+
+1. **RF-702 sigue Parcial.** El SRS pide «rendimiento asimétrico
+   **acumulado**», «**tasa de efectividad** de la IA» e «histórico de
+   **posiciones cerradas**»: los dos primeros se entregan **por fila** (por
+   sesión y por predicción) y el tercero **no tiene tipo de reporte** —
+   `transactions` no se consulta para nada en los reportes.
+2. **`senal` y `rendimiento` sin verificación en vivo.** Los cuatro tipos
+   se probaron con dobles; contra la base real solo los que leen
+   PostgreSQL (`kill-switch`, `auditoria`), porque InfluxDB no estaba
+   levantado. Sin InfluxDB responden **503** con mensaje en español (eso
+   sí está probado).
+3. **SMS real.** No hay módem GSM ni proveedor: solo la bandeja simulada.
+   Es la brecha original del Ítem 11, no una nueva.
+4. **Sin reintentos de envío.** A propósito: un aviso perdido se registra
+   como `NOTIFICACION_FALLIDA` y no se reintenta en bucle (sería un
+   correo por tick con el SMTP caído). La recuperación es manual.
+5. **Sin confirmación de lectura ni plantillas configurables.** El texto
+   está en el código, en español llano.
+
+### Verificación
+
+- **958 pruebas Python** y **61 de frontend** en verde; `oxlint` y
+  `vite build` sin avisos.
+- **En vivo, correo real:** un mensaje pasó por SMTP hasta Mailpit (1
+  mensaje con su asunto y destinatarios) y quedó en `audit_logs` como
+  `NOTIFICACION_ENVIADA`; el intento contra un puerto cerrado cayó como
+  `NOTIFICACION_FALLIDA` **sin lanzar**.
+- **En vivo, reportes:** `GET /api/reportes/auditoria` y `/kill-switch`
+  devolvieron 200 con CSV real y filas de la base; `POST /api/reportes/`
+  con tipo o formato inválidos devuelven 422.
+- **Regla crítica:** `tests/test_kill_switch.py::TestNotificacionDelDisparo`
+  — con el SMTP caído el disparo completa (bloqueo + liquidación +
+  auditoría), el envío fallido queda registrado **después** del disparo, y
+  un canal que se queda colgado no retrasa la respuesta (disparo < 1 s).
+
+### Impacto
+
+- **Dependencia nueva:** `fpdf2` (+ pillow y fonttools, ~12 MB) en el
+  grupo `ai`, solo en la imagen de la API; sigue sin `torch`.
+- **Variables nuevas** en `.env.m2.example`: `SMTP_*`, `SMS_*` (vacías por
+  defecto: sin configurar, no se envía nada y no se queja).
+- **Compose:** servicio `mailpit` con `profiles: [dev]`, no arranca en un
+  `up -d` normal.
+
+---
+
+## CR-008 — Visor de auditoría abierto en la intranet (ampliación de CR-006)
+
+| Campo | Valor |
+|---|---|
+| **Fecha de detección** | FASE D — 05/11/2026 |
+| **Solicitante** | Equipo de desarrollo (Naranja's Team) |
+| **Documentos afectados** | RNF-005 (aislamiento de datos / accesos no autorizados), CR-004 (API SOLO GET), CR-006 (autenticación mínima), RF-701 (visibilidad de la auditoría) |
+| **Tipo** | **Ampliación de una brecha ya declarada** |
+| **Prioridad** | Media |
+| **Estado** | **Brecha declarada, no cerrada** — pendiente de aprobación formal |
+
+### Contexto
+
+FASE D añade `GET /api/auditoria`: con paginación y filtros devuelve
+**IPs, actores, acciones y payloads** de `audit_logs`. Es lo que hace
+visible SS-10 (RF-701), y es exactamente el tipo de dato que RNF-005
+quiere fuera del alcance de los no autorizados.
+
+### Decisión
+
+**La ruta queda abierta**, coherente con el resto de rutas de solo
+lectura de la intranet (CR-004 y CR-006): meter autenticación en una
+ruta mientras las demás siguen abiertas no añade seguridad real, solo
+incoherencia. La decisión completa es la de CR-006 —sin usuarios, sin
+roles, sin TOTP— y esta CR solo registra su **extensión a un dato más
+sensible**.
+
+### Mitigación vigente
+
+- **Cero rutas de escritura**: el contrato OpenAPI de
+  `/api/auditoria` expone **solo `get`**, y hay cuatro pruebas de que
+  POST/PUT/PATCH/DELETE contestan 405. La auditoría se escribe desde el
+  backend (`src/security/auditoria.py`), nunca desde la interfaz.
+- La API sigue en **loopback por defecto** (`127.0.0.1`); se publica en
+  la intranet solo con `WEB_BIND=0.0.0.0`, que es la decisión de
+  despliegue ya conocida.
+- Los filtros son de **coincidencia exacta** y van parametrizados: no hay
+  forma de inyectar SQL por la query string.
+- Ninguna respuesta incluye credenciales ni secretos (misma regla que
+  CR-004).
+
+### Cierre previsto
+
+Junto con la autenticación de CR-006: `trader_users`, sesión y, para
+esta ruta en concreto, permiso de **solo lectura** para los roles que
+correspondan. Hasta entonces, cualquier revisión de seguridad debe leer
+CR-006 y esta CR antes que el código.
+
+### Verificación
+
+`tests/test_endpoints_auditoria.py` (23 pruebas): contrato `GET` único,
+405 en los cuatro métodos de escritura, filtros, paginación, rangos,
+nota de inmutabilidad visible y 503 explícito cuando no hay lector.

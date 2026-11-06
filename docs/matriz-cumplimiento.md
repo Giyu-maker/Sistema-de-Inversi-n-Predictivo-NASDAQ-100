@@ -3,7 +3,7 @@
 **Fuente de verdad:** `docs/srs.md` (v1.1 aprobado). Una fila por cada
 `RF-XXX`, `RNF-XXX` y `REST-XXX` del documento: **22 RF + 11 RNF + 6 REST =
 39 requisitos**.
-**Fecha:** 05/11/2026 · **Sprints 1–4** (Sprint 4 cerrado el 03/11/2026).
+**Fecha:** 05/11/2026 · **Sprints 1–4 + FASE D** (SS-9…SS-13; revisada el 05/11/2026).
 
 ### Cómo se lee el estado
 
@@ -24,9 +24,9 @@
 | Estado | Cantidad |
 |---|---|
 | Cumple | 15 |
-| Parcial | 21 |
+| Parcial | 22 |
 | No cumple | 0 |
-| Futuro | 3 |
+| Futuro | 2 |
 | **Total** | **39** |
 
 ---
@@ -55,7 +55,7 @@
 | **RF-601** Modo Sombra con datos reales | **Parcial** | `SimulatedBrokerGateway` cableado a `LectorInflux` (precios reales de InfluxDB) | **Ninguna liquidación ejecutada con precios de mercado reales**: las pruebas usan series inyectadas y un precio de prueba | CR-005 |
 | **RF-602** Trazabilidad `is_simulated = true` | **Cumple** | `transactions.is_simulated DEFAULT TRUE` (esquema), `SimulatedBrokerGateway` (siempre `True`), `tests/test_flujo_ordenes.py` y `tests/test_broker.py` | Aún sin filas reales, porque no se ha emitido ninguna orden en producción | — |
 | **RF-701** Conservación 5 años e inmutabilidad | **Parcial** | Triggers de `audit_logs` (fila + TRUNCATE, `ENABLE ALWAYS`) **verificados en PostgreSQL real** — informe §3; **demo manual de los tres ataques** en `scripts/demo_inmutabilidad.sql` (2 INSERT aceptados y 3 ERROR del trigger, cada ataque en su transacción con ROLLBACK); visor de solo lectura `GET /api/auditoria` + `tests/test_endpoints_auditoria.py` (un POST contesta 405) | La inmutabilidad está verificada y **ya es visible**; los **5 años** siguen siendo una política de respaldos **sin herramienta de purga** (SRS §4.4) ni medición de retención | CR-005 |
-| **RF-702** Reportes PDF/CSV | **Futuro** | `docs/backlog.md` Ítem 13; `src/utils/export.py` **no existe** | No empezado | — |
+| **RF-702** Reportes PDF/CSV | **Parcial** | `GET /api/reportes/{tipo}` con `senal`, `rendimiento`, `kill-switch` y `auditoria` en CSV (UTF-8 con BOM) y PDF (fpdf2); `src/utils/reportes.py`, sección del panel, `tests/test_reportes.py` (26) y `frontend/tests/reportes.test.mjs` (7); verificado en vivo para los tipos que leen PostgreSQL | El SRS pide **rendimiento asimétrico acumulado**, **tasa de efectividad agregada** e **histórico de posiciones cerradas**: los dos primeros salen por fila (por sesión y por predicción) y el tercero **no tiene tipo de reporte** (falta `transactions`). Además `senal`/`rendimiento` solo se probaron con dobles: sin InfluxDB responden 503 | CR-007 |
 | **RF-801** Runbook de fallos de IB | **Cumple** | `docs/runbook-broker.md` (entregado a operadora y secretaria), enlazado desde `docs/despliegue.md` | Los pasos para fallo de IB real quedan escritos pero **no probados** (Ítem 12) | CR-005 |
 
 ## 2. Requisitos no funcionales (RNF)
@@ -70,7 +70,7 @@
 | **RNF-006** Encriptación AES-256 en reposo | **Cumple** | `src/security/crypto.py` (AES-256-GCM), claves `*_ENC` en `.env`, descifrado en cada arranque del scheduler | Sin test automatizado dedicado del módulo (la verificación del Sprint 2 está en el checklist) | — |
 | **RNF-007** SLA 99,9 % | **Parcial** | Healthchecks de Docker y `GET /api/health` | **No hay medición acumulada** de disponibilidad ni registro de uptime | — |
 | **RNF-008** Mantenimientos después de las 18:00 CO | **Cumple** | `docs/despliegue.md` §8: reprogramación diaria a las **20:30 CO** (después de las 18:00) | Es una política operativa: ningún control impide programar mantenimiento en horario de sesión | — |
-| **RNF-009** Tolerancia a caídas de red | **Parcial** | `test_run_sobrevive_a_un_fallo_de_red`, puerta de sesión (P1.9), deduplicación por insert-if-absent | Sin IB real: **la suspensión de órdenes ante caída de red no se puede observar** | Ítem 12 |
+| **RNF-009** Tolerancia a caídas de red | **Parcial** | `test_run_sobrevive_a_un_fallo_de_red`, puerta de sesión (P1.9), deduplicación por insert-if-absent; **alerta al operador** con `src/integration/notificaciones.py` (correo SMTP real y bandeja SMS simulada, `NOTIFICACION_ENVIADA`/`NOTIFICACION_FALLIDA` en `audit_logs`) | Sin IB real: **la suspensión de órdenes ante caída de red no se puede observar**; el aviso de brecha cubre la pérdida de datos, no la del broker | Ítem 12, CR-007 |
 | **RNF-010** Prioridad del botón de pánico | **Parcial** | Informe §4 con la **interpretación** y las cuatro cifras rotuladas; `ResultadoDisparo`; CR-005 | En Python no hay prioridades de hilo reales (interpretación escrita) y la liquidación es **simulada**: el tiempo contra IB real **queda sin medir** | CR-005 |
 | **RNF-011** Tipado estricto | **Cumple** | `frontend/tsconfig.app.json` (`strict: true`) y **cero `any`** en `frontend/src`; Pydantic con `extra="forbid"` en todos los esquemas de salida | — | — |
 
@@ -97,6 +97,8 @@
 | **CR-004** | Superficie de la API de M2: SOLO GET, sin sesión | **Implementada y vigente en lo esencial** — el Sprint 4 añadió los POST del Kill-Switch; el cierre de sesión/roles queda en CR-006 |
 | **CR-005** | Kill-Switch: `kill_switch_state`, columna `actor`, inmutabilidad de `audit_logs`, broker simulado, RNF-010 | **Implementada y verificada** contra PostgreSQL real — **pendiente de aprobación formal** |
 | **CR-006** | Autenticación mínima: sin usuarios ni roles, reinicio con clave, brechas RF-503 / RNF-001 / RNF-005 | **Brechas declaradas, no cerradas** — **pendiente de aprobación formal** |
+| **CR-007** | FASE D: reportes (RF-702) y notificaciones (SS-11) — qué se implementó y qué no | **Implementado y verificado en vivo** (Mailpit y PostgreSQL reales) — **pendiente de aprobación formal** |
+| **CR-008** | Visor de auditoría abierto sin autenticación en la intranet (ampliación de la brecha de CR-006) | **Brecha declarada, no cerrada** — en un despliegue real iría detrás de login/TOTP |
 
 ---
 
@@ -104,8 +106,8 @@
 
 ```bash
 docker compose up -d postgres
-uv run --frozen --group ai --group ai-cpu pytest -q   # 878 pruebas (20 vivas se omiten sin contenedor)
-cd frontend && npm test && npm run lint && npm run build   # 47 pruebas
+uv run --frozen --group ai --group ai-cpu pytest -q   # 958 pruebas (20 vivas se omiten sin contenedor)
+cd frontend && npm test && npm run lint && npm run build   # 61 pruebas
 docker compose stop postgres
 ```
 

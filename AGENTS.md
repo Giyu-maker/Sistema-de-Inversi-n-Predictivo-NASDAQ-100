@@ -150,13 +150,15 @@ Flujo: `Twelve Data API (QQQ) → IngestionEngine (M2) → InfluxDB (M2) → Loc
 
 ## 14. Estado actual del proyecto
 
-**Estado global (05/11/2026): Sprints 1–4 cerrados.** Toda la evidencia se
-enlaza desde **`docs/informe-final.md`** (índice) y el estado
+**Estado global (05/11/2026): Sprints 1–4 y FASE D cerrados.** Toda la
+evidencia se enlaza desde **`docs/informe-final.md`** (índice) y el estado
 **requisito por requisito** —con archivo, test o informe que lo respalda—
-está en **`docs/matriz-cumplimiento.md`**: **15 Cumple · 21 Parcial ·
-0 No cumple · 3 Futuro** de los 39 requisitos del SRS v1.1. «Parcial»
+está en **`docs/matriz-cumplimiento.md`**: **15 Cumple · 22 Parcial ·
+0 No cumple · 2 Futuro** de los 39 requisitos del SRS v1.1. «Parcial»
 significa verificación con datos inyectados, broker simulado o sin
-observación en vivo; nunca «hecho».
+observación en vivo; nunca «hecho». Las decisiones de FASE D están en
+**CR-007** (reportes y notificaciones) y **CR-008** (visor de auditoría
+abierto en la intranet).
 
 - **Sprint 1 (Planeación) — COMPLETADO.** SRS v1.0 y SDD v1.0 aprobados (este archivo se basa en ellos).
 - **Sprint 2 (Walking Skeleton) — COMPLETADO (cierre 17/10/2026, tag `sprint-2-cierre`).**
@@ -179,8 +181,17 @@ observación en vivo; nunca «hecho».
   - **C5 `c773e21` — UI:** control en la cabecera a **2 toques**, chip `ROJO` con ícono propio y parpadeo lento apagado por `prefers-reduced-motion`, esquemas Zod y escenario `kill-switch-activo`.
   - **C6 — cierre:** CR-005 y CR-006, `docs/runbook-broker.md` (RF-801), `docs/informe-sprint4.md`.
   - **Recorte de alcance aprobado:** S4.2 (login y roles) **eliminado** → reinicio con clave de reinicio; S4.4 **reducido** a pruebas de integración. Brechas en CR-006: sin usuarios/roles/TOTP/CSRF, sin TLS, reinicio sin identidad personal (RF-503), rutas GET abiertas.
-  - **Cifras:** 878 pruebas Python + 47 de frontend en verde. **RNF-010 desglosado** (informe §4, cada cifra mide un paso distinto y no se suman): banda en memoria p95 **0,004 ms** · compare-and-set contra **PostgreSQL real** p50 **7,81** / p95 **11,83 ms** · liquidación p95 **0,038 ms** contra **`SimulatedBrokerGateway` simulado** (contra IB real **sin medir**, Ítem 12) · pulsación→respuesta HTTP p95 **1,66 ms** con dobles y **40,06 ms** con PostgreSQL real (sin el `INSERT` de auditoría).
-  - **Pendiente del Sprint 4:** Ítem 11 (notificaciones SMS/SMTP), Ítem 12 real (IB por TCP), Ítem 13 (reportes PDF/CSV), TLS, TOTP, RF-204 y la verificación física en M1.
+  - **RNF-010 desglosado** (informe §4, cada cifra mide un paso distinto y no se suman): banda en memoria p95 **0,004 ms** · compare-and-set contra **PostgreSQL real** p50 **7,81** / p95 **11,83 ms** · liquidación p95 **0,038 ms** contra **`SimulatedBrokerGateway` simulado** (contra IB real **sin medir**, Ítem 12) · pulsación→respuesta HTTP p95 **1,66 ms** con dobles y **40,06 ms** con PostgreSQL real (sin el `INSERT` de auditoría).
+  - **Pendiente al cierre del Sprint 4:** Ítem 11 (notificaciones) e Ítem 13 (reportes), ambos **cubiertos después por FASE D y ahora PARCIAL** (CR-007); sigue pendiente el **Ítem 12 real (IB por TCP)**, TLS, TOTP, RF-204 y la verificación física en M1.
+  - *Cifras del cierre de Sprint 4 (03/11/2026):* 878 pruebas Python + 47 de frontend. La cifra vigente está en FASE D, más abajo.
+- **FASE D (SS-9…SS-13 = Ítems 9–13) — COMPLETADO (05/11/2026), un commit por bloque.** Congelamiento de código 14/11/2026, entrega 18/11/2026.
+  - **D1 `1ef4986` — backlog reconciliado:** casillas `[x]`/`[ ]` con estado real y enlace a la matriz y al CR de cada Ítem, la equivalencia **Ítem N = SS-N (tablero del curso)** y los IDs de requisitos inexistentes (RF-04/RF-06/RF-07/RNF-05/RNF-06) sustituidos por los del SRS v1.1. El backlog ya no contradice a la matriz.
+  - **D2 `a898235` — reportes (RF-702):** `GET /api/reportes/{tipo}` con `senal`, `rendimiento`, `kill-switch` y `auditoria`, en **CSV (UTF-8 con BOM, separador `;`, neutralización de fórmulas solo en texto)** y **PDF (fpdf2, fuentes Latin-1 normalizadas)**, con cabecera fija (fecha, rango ET, fuente QQQ, «datos de mercado reales; broker simulado» y la métrica honesta del modelo). Sección colapsable en el panel. Dependencia nueva: `fpdf2` en el grupo `ai`.
+  - **D4 `cdaf7f3` — visor de auditoría:** `GET /api/auditoria` de **solo lectura** con filtros, paginación y la nota «Registros inmutables a nivel de base de datos (RF-701)» + tabla en el panel. **Cero rutas de escritura** verificado por contrato OpenAPI (y 4 pruebas de 405). Entra `scripts/demo_inmutabilidad.sql` (2 INSERT y 3 ERROR del trigger, 0 filas).
+  - **D3 `7e26a60` — notificaciones (SS-11):** `Notificador` con **SMTP real** (credenciales solo en `.env`) y **SMS simulado** (bandeja rotulada `simulado: true`), dos disparadores (activación del Kill-Switch y brecha de datos, una vez por sesión) y el paso **(e) en un hilo daemon después de bandera → CAS → liquidación → auditoría**: una notificación caída **nunca** frena el bloqueo, y su éxito/fallo queda en `audit_logs` (`NOTIFICACION_ENVIADA`/`NOTIFICACION_FALLIDA`). Mailpit con `profiles: [dev]` para la demo (`docker compose --profile dev up -d mailpit`, UI en `127.0.0.1:8025`), documentado en el runbook §7.
+  - **D5 — cierre:** matriz actualizada (**15 Cumple · 22 Parcial · 2 Futuro**), **CR-007** y **CR-008**, `docs/informe-final.md`, runbook §7, backlog final y `scripts/sesion.sh start` con `docker compose up -d --build`.
+  - **SS-12 sigue PARCIAL**: la liquidación es `SimulatedBrokerGateway` y **no hay TCP con Interactive Brokers**; razón escrita en CR-005, en la matriz (RF-402/RF-502/RF-601) y en el runbook §3.
+  - **Pruebas:** 958 Python + 61 de frontend en verde; `oxlint` y `vite build` sin avisos. Verificación en vivo: correo real hasta Mailpit, reportes y visor contra PostgreSQL real, demo de inmutabilidad con 3 ERROR.
 
 ## 15. Modelo de desarrollo y despliegue
 

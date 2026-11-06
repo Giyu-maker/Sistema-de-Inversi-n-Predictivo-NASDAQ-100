@@ -2,7 +2,8 @@
 
 **Cliente:** RiTech SAS · **Equipo:** Naranja's Team · **Fecha:** 05/11/2026
 **Alcance cubierto:** Sprints 1–4 (planeación, walking skeleton, cerebro
-predictivo + panel, y seguridad operativa).
+predictivo + panel, y seguridad operativa) y **FASE D** (SS-9…SS-13:
+reconciliación del backlog, reportes, visor de auditoría y notificaciones).
 
 Este documento es el **índice**: no repite contenido, enlaza dónde está cada
 verificación y lista —sin adornos— lo que falta. Si algo de este proyecto
@@ -14,19 +15,20 @@ hay que revisar en dos minutos, se empieza por la **matriz de cumplimiento**.
 
 | Documento | Qué cubre | Fecha |
 |---|---|---|
-| **[matriz-cumplimiento.md](matriz-cumplimiento.md)** | **Los 39 requisitos del SRS con estado, evidencia, brecha y CR** + índice CR-001…CR-006 | 05/11/2026 |
+| **[matriz-cumplimiento.md](matriz-cumplimiento.md)** | **Los 39 requisitos del SRS con estado, evidencia, brecha y CR** + índice CR-001…CR-008 | 05/11/2026 |
 | [informe-sprint4.md](informe-sprint4.md) | Kill-Switch, auditoría inmutable, disparo automático, RNF-010 desglosado, verificación contra PostgreSQL real | 03/11/2026 |
 | [informe-b2-sprint3.md](informe-b2-sprint3.md) | Dashboard, RNF-003 por componentes, RNF-004, capturas y revisión | 25/10/2026 |
 | [informe-b1-sprint3.md](informe-b1-sprint3.md) | API de M2, ciclo `scheduler → M1 → ai_predictions`, benchmark RNF-003 | 20/10/2026 |
 | [informe-entrenamiento-sprint3.md](informe-entrenamiento-sprint3.md) | Entrenamiento del modelo, métricas, XAI y límites del artefacto | 17/10/2026 |
-| [change-requests.md](change-requests.md) | **CR-001 … CR-006**: qué se decidió, por qué y con qué impacto | 17/10 → 05/11/2026 |
+| [change-requests.md](change-requests.md) | **CR-001 … CR-008**: qué se decidió, por qué y con qué impacto. FASE D añade **CR-007** (reportes y notificaciones: qué se implementó y qué no) y **CR-008** (visor de auditoría abierto en la intranet) | 17/10 → 05/11/2026 |
 | [runbook-broker.md](runbook-broker.md) | RF-801: qué hace el operador ante cada fallo | 03/11/2026 |
 | [despliegue.md](despliegue.md) | Instalación por máquina, variables de entorno, operación cotidiana | 25/10/2026 |
 | [backlog.md](backlog.md) | Planificación de sprints y estado de cada ítem | 05/11/2026 |
 | [srs.md](srs.md) · [sdd.md](sdd.md) | Requisitos (v1.1) y diseño (v1.1), fuentes de verdad | 17/10/2026 |
 
-**Estados en una mirada** (matriz §Resumen): **15 Cumple · 21 Parcial ·
-0 No cumple · 3 Futuro** de 39 requisitos. «Parcial» no es un eufemismo de
+**Estados en una mirada** (matriz §Resumen, tras FASE D): **15 Cumple ·
+22 Parcial · 0 No cumple · 2 Futuro** de 39 requisitos (RF-702 pasó de
+Futuro a Parcial). «Parcial» no es un eufemismo de
 «hecho»: significa que la verificación fue solo con datos inyectados, con el
 broker simulado, o sin observación en vivo — la matriz dice cuál en cada
 fila.
@@ -60,6 +62,15 @@ afecta a un requisito aprobado, su CR.
    regular (78 de ~192 velas): sin pre-market ni after-hours (CR-002).
 6. **Sin interfaz de configuración**: los perfiles de riesgo y el modo se
    cambian escribiendo en la base (RF-403, RNF-002).
+7. **Reportes parciales (FASE D, CR-007)**: `senal` y `rendimiento` solo
+   se probaron con dobles (sin InfluxDB responden 503) y falta el
+   **histórico de posiciones cerradas** que pide RF-702.
+8. **SMS simulado (FASE D, CR-007)**: hay correo SMTP real y bandeja local
+   rotulada como simulada, pero **no hay módem ni proveedor**: nadie
+   recibe un SMS de verdad.
+9. **Visor de auditoría abierto en la intranet (FASE D, CR-008)**: IP,
+   actores y acciones al alcance de quien llegue al panel; sin rutas de
+   escritura, pero también sin login.
 7. **Retención de 5 años sin mecanismo**: la inmutabilidad está verificada,
    pero no hay herramienta de purga para ADMIN_TI (SRS §4.4) ni medición de
    retención (RF-701).
@@ -89,8 +100,8 @@ afecta a un requisito aprobado, su CR.
 | Alta | **Ítem 12**: IB Gateway por TCP → implementar `BrokerGateway` en `src/integration/` | backlog, CR-005 |
 | Alta | **Autenticación**: `trader_users` + sesiones + roles + TOTP, y rol de mínimo privilegio (D4) | CR-006, CR-004 |
 | Alta | **Verificación física en M1** (CUDA, entrenamiento diario, inferencia) | informe-sprint4 §5 |
-| Media | **Ítem 11**: notificaciones SMS/SMTP (módem GSM o SMTP local) | backlog, despliegue §12 |
-| Media | **Ítem 13**: reportes financieros PDF/CSV (RF-702) | backlog, despliegue §12 |
+| Media | **Ítem 11 (parcial)**: SMS **real** — hoy hay SMTP real + bandeja simulada (CR-007); falta módem o proveedor | backlog, runbook §7 |
+| Media | **Ítem 13 (parcial)**: reportes PDF/CSV funcionando (CR-007); falta el **histórico de posiciones cerradas**, el rendimiento **acumulado** y la tasa de efectividad **agregada** de RF-702, y verificar `senal`/`rendimiento` con InfluxDB en vivo | backlog, matriz RF-702 |
 | Media | **Cierre de RNF-003** con observación end-to-end en vela real | backlog, informe B2 |
 | Media | **RF-204**: ventanas de exclusión por volatilidad | backlog, `asymmetric.py` |
 | Media | **Captura y revisión** del control del Kill-Switch (`break-ui` sobre `kill-switch-activo`) | AGENTS.md §17.3.4 |
@@ -104,8 +115,12 @@ afecta a un requisito aprobado, su CR.
 ```bash
 # Backend (las vivas se omiten solas sin el contenedor)
 docker compose up -d postgres
-uv run --frozen --group ai --group ai-cpu pytest -q    # 927 pruebas
+uv run --frozen --group ai --group ai-cpu pytest -q    # 958 pruebas
 docker compose stop postgres
+
+# Demo de notificaciones (FASE D): bandeja de correo en el navegador
+docker compose --profile dev up -d mailpit   # http://127.0.0.1:8025
+docker compose --profile dev stop mailpit
 
 # Demo manual de la inmutabilidad de `audit_logs` (RF-701): dos INSERT
 # aceptados y tres ERROR del trigger, cada ataque en su transacción con
@@ -120,7 +135,7 @@ cd frontend && npm test && npm run lint && npm run build   # 61 pruebas
 scripts/sesion.sh estado
 ```
 
-**Última corrida (05/11/2026):** 927 pruebas Python + 61 de frontend en
+**Última corrida (05/11/2026):** 958 pruebas Python + 61 de frontend en
 verde; `oxlint` y `vite build` sin avisos. Las mediciones de RNF-010 y de
 RNF-003 están en sus informes con la descripción exacta de qué mide cada
 cifra.
